@@ -49,6 +49,14 @@ pub enum Stmt {
         expr: Expr,
         span: Span,
     },
+    /// Local constant declaration: `const <name>: <type>? = <expr>;`
+    Const {
+        name: String,
+        name_span: Span,
+        annotated_type: Option<Type>,
+        expr: Expr,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone)]

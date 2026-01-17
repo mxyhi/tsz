@@ -8,10 +8,10 @@
   - [x] 语法：`let <name>: <type>? = <expr>;`（先支持函数体内；块级作用域）
   - [x] 编译链路：lexer → parser(AST) → typecheck(HIR/作用域) → codegen(局部变量) → build/run 测试用例
 
-- [ ] const
-  - [ ] 语法：`const <name>: <type>? = <expr>;`（只读）
-  - [ ] 语义：禁止 reassignment；最小常量折叠/内联（先覆盖字面量与一元负号）
-  - [ ] 测试：编译期报错（写 const）+ build/run（读 const）
+- [x] const
+  - [x] 语法：`const <name>: <type>? = <expr>;`（只读）
+  - [x] 语义：编译期常量折叠/内联（字面量与一元负号；允许引用其他 `const`）
+  - [x] 测试：编译期报错（非 const expr）+ build/run（读 const）
 
 - [ ] function
   - [x] v0：0 参数 + 单 `return`（当前已实现）

@@ -8,6 +8,7 @@ pub enum TokenKind {
     KwFrom,
     KwReturn,
     KwLet,
+    KwConst,
     Ident,
     Number,
     BigInt,
@@ -131,6 +132,7 @@ impl<'a> Lexer<'a> {
             "from" => TokenKind::KwFrom,
             "return" => TokenKind::KwReturn,
             "let" => TokenKind::KwLet,
+            "const" => TokenKind::KwConst,
             _ => TokenKind::Ident,
         })
     }

@@ -79,9 +79,10 @@ impl<'a> Parser<'a> {
         match self.peek().kind {
             TokenKind::KwReturn => self.parse_return_stmt(),
             TokenKind::KwLet => self.parse_let_stmt(),
+            TokenKind::KwConst => self.parse_const_stmt(),
             TokenKind::Ident => self.parse_console_log_stmt(),
             _ => Err(TszError::Parse {
-                message: "Only let/console.log(...)/return statements are supported".to_string(),
+                message: "Only let/const/console.log(...)/return statements are supported".to_string(),
                 span: self.peek().span,
             }),
         }
@@ -104,6 +105,34 @@ impl<'a> Parser<'a> {
         let semi = self.expect(TokenKind::Semicolon)?.span;
 
         Ok(Stmt::Let {
+            name,
+            name_span,
+            annotated_type,
+            expr,
+            span: Span {
+                start: start.start,
+                end: semi.end,
+            },
+        })
+    }
+
+    fn parse_const_stmt(&mut self) -> Result<Stmt, TszError> {
+        let start = self.expect(TokenKind::KwConst)?.span;
+        let name_tok = self.expect(TokenKind::Ident)?;
+        let name_span = name_tok.span;
+        let name = self.slice(name_tok.span).to_string();
+
+        let annotated_type = if self.eat(TokenKind::Colon) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
+        self.expect(TokenKind::Equal)?;
+        let expr = self.parse_expr()?;
+        let semi = self.expect(TokenKind::Semicolon)?.span;
+
+        Ok(Stmt::Const {
             name,
             name_span,
             annotated_type,
@@ -452,6 +481,20 @@ export function main(): void {
 export function main(): bigint {
   let x: bigint = 1n;
   let y = -x;
+  return y;
+}
+"#;
+        let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+        assert_eq!(m.functions.len(), 1);
+        assert_eq!(m.functions[0].body.len(), 3);
+    }
+
+    #[test]
+    fn parse_const_stmt() {
+        let src = r#"
+export function main(): bigint {
+  const x: bigint = 1n;
+  const y = -x;
   return y;
 }
 "#;
