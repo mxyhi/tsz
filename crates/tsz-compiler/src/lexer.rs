@@ -55,61 +55,8 @@ impl<'a> Lexer<'a> {
     fn next_token(&mut self) -> Result<Token, TszError> {
         self.skip_ws_and_comments()?;
         let start = self.pos;
-        let Some(b) = self.peek_byte() else {
-            return Ok(Token {
-                kind: TokenKind::Eof,
-                span: Span {
-                    start: self.pos,
-                    end: self.pos,
-                },
-            });
-        };
-
-        let kind = match b {
-            b':' => {
-                self.pos += 1;
-                TokenKind::Colon
-            }
-            b';' => {
-                self.pos += 1;
-                TokenKind::Semicolon
-            }
-            b'(' => {
-                self.pos += 1;
-                TokenKind::LParen
-            }
-            b')' => {
-                self.pos += 1;
-                TokenKind::RParen
-            }
-            b'{' => {
-                self.pos += 1;
-                TokenKind::LBrace
-            }
-            b'}' => {
-                self.pos += 1;
-                TokenKind::RBrace
-            }
-            b'-' => {
-                self.pos += 1;
-                TokenKind::Minus
-            }
-            b'"' | b'\'' => {
-                self.lex_string()?;
-                TokenKind::String
-            }
-            b'0'..=b'9' => self.lex_number_or_bigint()?,
-            b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'$' => self.lex_ident_or_keyword()?,
-            _ => {
-                return Err(TszError::Lex {
-                    message: format!("不支持的字符: 0x{b:02X}"),
-                    span: Span {
-                        start,
-                        end: start + 1,
-                    },
-                });
-            }
-        };
+        let Some(b) = self.peek_byte() else { return Ok(self.eof_token()) };
+        let kind = self.lex_token_kind(start, b)?;
 
         Ok(Token {
             kind,
@@ -118,6 +65,39 @@ impl<'a> Lexer<'a> {
                 end: self.pos,
             },
         })
+    }
+
+    fn eof_token(&self) -> Token {
+        Token {
+            kind: TokenKind::Eof,
+            span: Span {
+                start: self.pos,
+                end: self.pos,
+            },
+        }
+    }
+
+    fn lex_token_kind(&mut self, start: usize, b: u8) -> Result<TokenKind, TszError> {
+        if let Some(kind) = lex_single_char(b) {
+            self.pos += 1;
+            return Ok(kind);
+        }
+
+        match b {
+            b'"' | b'\'' => {
+                self.lex_string()?;
+                Ok(TokenKind::String)
+            }
+            b'0'..=b'9' => self.lex_number_or_bigint(),
+            b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'$' => self.lex_ident_or_keyword(),
+            _ => Err(TszError::Lex {
+                message: format!("不支持的字符: 0x{b:02X}"),
+                span: Span {
+                    start,
+                    end: start + 1,
+                },
+            }),
+        }
     }
 
     fn lex_ident_or_keyword(&mut self) -> Result<TokenKind, TszError> {
@@ -276,3 +256,16 @@ impl<'a> Lexer<'a> {
     }
 }
 
+#[inline]
+fn lex_single_char(b: u8) -> Option<TokenKind> {
+    Some(match b {
+        b':' => TokenKind::Colon,
+        b';' => TokenKind::Semicolon,
+        b'(' => TokenKind::LParen,
+        b')' => TokenKind::RParen,
+        b'{' => TokenKind::LBrace,
+        b'}' => TokenKind::RBrace,
+        b'-' => TokenKind::Minus,
+        _ => return None,
+    })
+}

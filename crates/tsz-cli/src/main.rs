@@ -115,6 +115,6 @@ fn default_binary_name() -> &'static str {
     }
 }
 
-fn default_output_path(_entry: PathBuf) -> PathBuf {
+fn default_output_path() -> PathBuf {
     PathBuf::from(default_binary_name())
 }

@@ -1,10 +1,11 @@
 use crate::{Expr, FunctionDecl, Module, OptLevel, TszError, Type};
-use cranelift_codegen::binemit::NullTrapSink;
+use cranelift_codegen::ir::InstBuilder;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::{ir, isa};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{FuncId, Linkage, Module as _};
 use cranelift_object::{ObjectBuilder, ObjectModule};
+use std::sync::Arc;
 
 pub fn emit_object(module_ast: &Module, opt_level: OptLevel) -> Result<Vec<u8>, TszError> {
     // 设计目标：对 TSZ 的静态语义做“强约束”，以换取可预测布局与 AOT 优化空间。
@@ -27,7 +28,7 @@ struct EntryIds {
     wrapper_main: FuncId,
 }
 
-fn build_isa(opt_level: OptLevel) -> Result<Box<dyn isa::TargetIsa>, TszError> {
+fn build_isa(opt_level: OptLevel) -> Result<Arc<dyn isa::TargetIsa>, TszError> {
     let opt = match opt_level {
         OptLevel::None => "none",
         OptLevel::Speed => "speed",
@@ -48,7 +49,7 @@ fn build_isa(opt_level: OptLevel) -> Result<Box<dyn isa::TargetIsa>, TszError> {
     })
 }
 
-fn build_object_module(isa: Box<dyn isa::TargetIsa>) -> Result<ObjectModule, TszError> {
+fn build_object_module(isa: Arc<dyn isa::TargetIsa>) -> Result<ObjectModule, TszError> {
     let builder = ObjectBuilder::new(
         isa,
         "tsz",
@@ -115,9 +116,8 @@ fn define_user_main(
     };
     fn_builder.finalize();
 
-    let mut trap_sink = NullTrapSink {};
     object_module
-        .define_function(user_id, &mut ctx, &mut trap_sink)
+        .define_function(user_id, &mut ctx)
         .map_err(|e| TszError::Codegen {
             message: format!("define user main 失败: {e}"),
         })?;
@@ -148,9 +148,8 @@ fn define_wrapper_main(
     fn_builder.ins().return_(&[exit_code]);
     fn_builder.finalize();
 
-    let mut trap_sink = NullTrapSink {};
     object_module
-        .define_function(wrapper_id, &mut ctx, &mut trap_sink)
+        .define_function(wrapper_id, &mut ctx)
         .map_err(|e| TszError::Codegen {
             message: format!("define wrapper main 失败: {e}"),
         })?;
@@ -181,12 +180,7 @@ fn build_exit_code(
     })
 }
 
-fn finalize_and_emit(mut object_module: ObjectModule) -> Result<Vec<u8>, TszError> {
-    object_module
-        .finalize_definitions()
-        .map_err(|e| TszError::Codegen {
-            message: format!("finalize_definitions 失败: {e}"),
-        })?;
+fn finalize_and_emit(object_module: ObjectModule) -> Result<Vec<u8>, TszError> {
     let product = object_module.finish();
     product.emit().map_err(|e| TszError::Codegen {
         message: format!("emit object 失败: {e}"),
