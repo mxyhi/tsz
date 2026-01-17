@@ -114,6 +114,7 @@ pub enum Expr {
     String { value: String, span: Span },
     Ident { name: String, span: Span },
     UnaryMinus { expr: Box<Expr>, span: Span },
+    UnaryNot { expr: Box<Expr>, span: Span },
     Call { callee: String, args: Vec<Expr>, span: Span },
     Binary {
         op: BinaryOp,
@@ -129,6 +130,14 @@ pub enum BinaryOp {
     Sub,
     Mul,
     Div,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    And,
+    Or,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

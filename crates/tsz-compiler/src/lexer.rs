@@ -21,6 +21,15 @@ pub enum TokenKind {
     String,
     Colon,
     Equal,
+    EqualEqual,
+    Bang,
+    BangEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    AndAnd,
+    OrOr,
     PlusEqual,
     MinusEqual,
     StarEqual,
@@ -133,8 +142,62 @@ impl<'a> Lexer<'a> {
                 return Ok(TokenKind::Slash);
             }
             b'=' => {
+                if self.peek_byte_at(self.pos + 1) == Some(b'=') {
+                    self.pos += 2;
+                    return Ok(TokenKind::EqualEqual);
+                }
                 self.pos += 1;
                 return Ok(TokenKind::Equal);
+            }
+            b'!' => {
+                if self.peek_byte_at(self.pos + 1) == Some(b'=') {
+                    self.pos += 2;
+                    return Ok(TokenKind::BangEqual);
+                }
+                self.pos += 1;
+                return Ok(TokenKind::Bang);
+            }
+            b'<' => {
+                if self.peek_byte_at(self.pos + 1) == Some(b'=') {
+                    self.pos += 2;
+                    return Ok(TokenKind::LessEqual);
+                }
+                self.pos += 1;
+                return Ok(TokenKind::Less);
+            }
+            b'>' => {
+                if self.peek_byte_at(self.pos + 1) == Some(b'=') {
+                    self.pos += 2;
+                    return Ok(TokenKind::GreaterEqual);
+                }
+                self.pos += 1;
+                return Ok(TokenKind::Greater);
+            }
+            b'&' => {
+                if self.peek_byte_at(self.pos + 1) == Some(b'&') {
+                    self.pos += 2;
+                    return Ok(TokenKind::AndAnd);
+                }
+                return Err(TszError::Lex {
+                    message: "Unsupported character: '&'".to_string(),
+                    span: Span {
+                        start,
+                        end: start + 1,
+                    },
+                });
+            }
+            b'|' => {
+                if self.peek_byte_at(self.pos + 1) == Some(b'|') {
+                    self.pos += 2;
+                    return Ok(TokenKind::OrOr);
+                }
+                return Err(TszError::Lex {
+                    message: "Unsupported character: '|'".to_string(),
+                    span: Span {
+                        start,
+                        end: start + 1,
+                    },
+                });
             }
             _ => {}
         }

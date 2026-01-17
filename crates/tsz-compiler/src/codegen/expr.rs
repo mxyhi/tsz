@@ -6,6 +6,8 @@ use cranelift_module::{DataId, FuncId, Module as _};
 use cranelift_object::ObjectModule;
 
 use super::string_pool::StringPool;
+mod ops;
+use ops::{codegen_binary, codegen_logical_and, codegen_logical_or, codegen_unary_minus, codegen_unary_not};
 
 pub(super) fn codegen_expr(
     builder: &mut FunctionBuilder<'_>,
@@ -18,8 +20,6 @@ pub(super) fn codegen_expr(
     local_vars: &[Variable],
     expr: &HirExpr,
 ) -> Result<ir::Value, TszError> {
-    let ty = hir_expr_type(program, func, expr)?;
-
     match expr {
         HirExpr::Number { value, .. } => Ok(builder.ins().f64const(*value)),
         HirExpr::BigInt { value, .. } => Ok(builder.ins().iconst(ir::types::I64, *value)),
@@ -27,7 +27,22 @@ pub(super) fn codegen_expr(
         HirExpr::String { value, .. } => codegen_string_literal(builder, object_module, string_pool, value),
         HirExpr::Param { param, .. } => codegen_param_value(builder, param_vars, *param),
         HirExpr::Local { local, .. } => codegen_local_value(builder, local_vars, *local),
-        HirExpr::UnaryMinus { expr, .. } => codegen_unary_minus(
+        HirExpr::UnaryMinus { expr, .. } => {
+            let ty = hir_expr_type(program, func, expr)?;
+            codegen_unary_minus(
+                builder,
+                object_module,
+                program,
+                func_ids,
+                string_pool,
+                func,
+                param_vars,
+                local_vars,
+                ty,
+                expr,
+            )
+        }
+        HirExpr::UnaryNot { expr, .. } => codegen_unary_not(
             builder,
             object_module,
             program,
@@ -36,36 +51,63 @@ pub(super) fn codegen_expr(
             func,
             param_vars,
             local_vars,
-            ty,
             expr,
         ),
-        HirExpr::Binary { op, left, right, .. } => codegen_binary(
-            builder,
-            object_module,
-            program,
-            func_ids,
-            string_pool,
-            func,
-            param_vars,
-            local_vars,
-            ty,
-            *op,
-            left,
-            right,
-        ),
-        HirExpr::Call { callee, args, .. } => codegen_call(
-            builder,
-            object_module,
-            program,
-            func_ids,
-            string_pool,
-            func,
-            param_vars,
-            local_vars,
-            ty,
-            *callee,
-            args,
-        ),
+        HirExpr::Binary { op, left, right, .. } => match op {
+            crate::HirBinaryOp::And => codegen_logical_and(
+                builder,
+                object_module,
+                program,
+                func_ids,
+                string_pool,
+                func,
+                param_vars,
+                local_vars,
+                left,
+                right,
+            ),
+            crate::HirBinaryOp::Or => codegen_logical_or(
+                builder,
+                object_module,
+                program,
+                func_ids,
+                string_pool,
+                func,
+                param_vars,
+                local_vars,
+                left,
+                right,
+            ),
+            _ => codegen_binary(
+                builder,
+                object_module,
+                program,
+                func_ids,
+                string_pool,
+                func,
+                param_vars,
+                local_vars,
+                *op,
+                left,
+                right,
+            ),
+        },
+        HirExpr::Call { callee, args, .. } => {
+            let ty = hir_expr_type(program, func, expr)?;
+            codegen_call(
+                builder,
+                object_module,
+                program,
+                func_ids,
+                string_pool,
+                func,
+                param_vars,
+                local_vars,
+                ty,
+                *callee,
+                args,
+            )
+        }
     }
 }
 
@@ -105,92 +147,6 @@ fn codegen_local_value(
     Ok(builder.use_var(var))
 }
 
-fn codegen_unary_minus(
-    builder: &mut FunctionBuilder<'_>,
-    object_module: &mut ObjectModule,
-    program: &HirProgram,
-    func_ids: &[FuncId],
-    string_pool: &mut StringPool,
-    func: &crate::HirFunction,
-    param_vars: &[Variable],
-    local_vars: &[Variable],
-    ty: Type,
-    expr: &HirExpr,
-) -> Result<ir::Value, TszError> {
-    let v = codegen_expr(
-        builder,
-        object_module,
-        program,
-        func_ids,
-        string_pool,
-        func,
-        param_vars,
-        local_vars,
-        expr,
-    )?;
-    match ty {
-        Type::BigInt => Ok(builder.ins().ineg(v)),
-        Type::Number => Ok(builder.ins().fneg(v)),
-        Type::Void | Type::Bool | Type::String => Err(TszError::Codegen {
-            message: "Invalid unary minus type (should have been blocked by typecheck)".to_string(),
-        }),
-    }
-}
-
-fn codegen_binary(
-    builder: &mut FunctionBuilder<'_>,
-    object_module: &mut ObjectModule,
-    program: &HirProgram,
-    func_ids: &[FuncId],
-    string_pool: &mut StringPool,
-    func: &crate::HirFunction,
-    param_vars: &[Variable],
-    local_vars: &[Variable],
-    ty: Type,
-    op: crate::HirBinaryOp,
-    left: &HirExpr,
-    right: &HirExpr,
-) -> Result<ir::Value, TszError> {
-    let lhs = codegen_expr(
-        builder,
-        object_module,
-        program,
-        func_ids,
-        string_pool,
-        func,
-        param_vars,
-        local_vars,
-        left,
-    )?;
-    let rhs = codegen_expr(
-        builder,
-        object_module,
-        program,
-        func_ids,
-        string_pool,
-        func,
-        param_vars,
-        local_vars,
-        right,
-    )?;
-    match ty {
-        Type::Number => Ok(match op {
-            crate::HirBinaryOp::Add => builder.ins().fadd(lhs, rhs),
-            crate::HirBinaryOp::Sub => builder.ins().fsub(lhs, rhs),
-            crate::HirBinaryOp::Mul => builder.ins().fmul(lhs, rhs),
-            crate::HirBinaryOp::Div => builder.ins().fdiv(lhs, rhs),
-        }),
-        Type::BigInt => Ok(match op {
-            crate::HirBinaryOp::Add => builder.ins().iadd(lhs, rhs),
-            crate::HirBinaryOp::Sub => builder.ins().isub(lhs, rhs),
-            crate::HirBinaryOp::Mul => builder.ins().imul(lhs, rhs),
-            crate::HirBinaryOp::Div => builder.ins().sdiv(lhs, rhs),
-        }),
-        Type::Void | Type::Bool | Type::String => Err(TszError::Codegen {
-            message: "Invalid binary operator type (should have been blocked by typecheck)".to_string(),
-        }),
-    }
-}
 
 fn codegen_call(
     builder: &mut FunctionBuilder<'_>,
@@ -255,7 +211,21 @@ pub(super) fn hir_expr_type(program: &HirProgram, func: &crate::HirFunction, exp
             })?
             .ty,
         HirExpr::UnaryMinus { expr, .. } => hir_expr_type(program, func, expr)?,
-        HirExpr::Binary { left, .. } => hir_expr_type(program, func, left)?,
+        HirExpr::UnaryNot { .. } => Type::Bool,
+        HirExpr::Binary { op, left, .. } => match op {
+            crate::HirBinaryOp::Add
+            | crate::HirBinaryOp::Sub
+            | crate::HirBinaryOp::Mul
+            | crate::HirBinaryOp::Div => hir_expr_type(program, func, left)?,
+            crate::HirBinaryOp::Eq
+            | crate::HirBinaryOp::Ne
+            | crate::HirBinaryOp::Lt
+            | crate::HirBinaryOp::Le
+            | crate::HirBinaryOp::Gt
+            | crate::HirBinaryOp::Ge
+            | crate::HirBinaryOp::And
+            | crate::HirBinaryOp::Or => Type::Bool,
+        },
         HirExpr::Call { callee, .. } => program
             .functions
             .get(*callee)

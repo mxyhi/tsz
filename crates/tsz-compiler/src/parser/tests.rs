@@ -189,6 +189,78 @@ export function main(): number {
 }
 
 #[test]
+fn parse_comparison_precedence() {
+    let src = r#"
+export function main(): boolean {
+  return 1 + 2 < 3 * 4;
+}
+"#;
+    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let f = &m.functions[0];
+    let Some(Stmt::Return { expr: Some(expr), .. }) = f.body.first() else {
+        panic!("expected return");
+    };
+
+    let Expr::Binary { op: BinaryOp::Lt, left, right, .. } = expr else {
+        panic!("expected < at top level");
+    };
+    assert!(matches!(left.as_ref(), Expr::Binary { op: BinaryOp::Add, .. }));
+    assert!(matches!(right.as_ref(), Expr::Binary { op: BinaryOp::Mul, .. }));
+}
+
+#[test]
+fn parse_logical_precedence_and_unary_not() {
+    let src = r#"
+export function main(): boolean {
+  return true || false && !false;
+}
+"#;
+    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let f = &m.functions[0];
+    let Some(Stmt::Return { expr: Some(expr), .. }) = f.body.first() else {
+        panic!("expected return");
+    };
+
+    let Expr::Binary { op: BinaryOp::Or, left, right, .. } = expr else {
+        panic!("expected || at top level");
+    };
+    assert!(matches!(left.as_ref(), Expr::Bool { value: true, .. }));
+
+    let Expr::Binary {
+        op: BinaryOp::And,
+        left: and_left,
+        right: and_right,
+        ..
+    } = right.as_ref()
+    else {
+        panic!("expected && on right side");
+    };
+    assert!(matches!(and_left.as_ref(), Expr::Bool { value: false, .. }));
+    assert!(matches!(
+        and_right.as_ref(),
+        Expr::UnaryNot {
+            expr,
+            ..
+        } if matches!(expr.as_ref(), Expr::Bool { value: false, .. })
+    ));
+}
+
+#[test]
+fn parse_equality_ops() {
+    let src = r#"
+export function main(): boolean {
+  return 1n == 2n;
+}
+"#;
+    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let f = &m.functions[0];
+    let Some(Stmt::Return { expr: Some(expr), .. }) = f.body.first() else {
+        panic!("expected return");
+    };
+    assert!(matches!(expr, Expr::Binary { op: BinaryOp::Eq, .. }));
+}
+
+#[test]
 fn parse_block_stmt() {
     let src = r#"
 export function main(): void {

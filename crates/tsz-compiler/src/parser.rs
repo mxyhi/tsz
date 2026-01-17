@@ -279,14 +279,114 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr(&mut self) -> Result<Expr, TszError> {
-        self.parse_additive_expr()
+        self.parse_logical_or_expr()
     }
 
     // Expression parsing (small TS subset):
     // - primary: literals / identifiers / calls / parenthesized expressions
-    // - unary: -<expr>
+    // - unary: -<expr> / !<expr>
     // - multiplicative: * /
     // - additive: + -
+    // - relational: < <= > >=
+    // - equality: == !=
+    // - logical and: &&
+    // - logical or: ||
+    fn parse_logical_or_expr(&mut self) -> Result<Expr, TszError> {
+        let mut expr = self.parse_logical_and_expr()?;
+        loop {
+            if self.peek().kind != TokenKind::OrOr {
+                break;
+            }
+            self.bump();
+            let rhs = self.parse_logical_and_expr()?;
+            let span = Span {
+                start: expr_span(&expr).start,
+                end: expr_span(&rhs).end,
+            };
+            expr = Expr::Binary {
+                op: BinaryOp::Or,
+                left: Box::new(expr),
+                right: Box::new(rhs),
+                span,
+            };
+        }
+        Ok(expr)
+    }
+
+    fn parse_logical_and_expr(&mut self) -> Result<Expr, TszError> {
+        let mut expr = self.parse_equality_expr()?;
+        loop {
+            if self.peek().kind != TokenKind::AndAnd {
+                break;
+            }
+            self.bump();
+            let rhs = self.parse_equality_expr()?;
+            let span = Span {
+                start: expr_span(&expr).start,
+                end: expr_span(&rhs).end,
+            };
+            expr = Expr::Binary {
+                op: BinaryOp::And,
+                left: Box::new(expr),
+                right: Box::new(rhs),
+                span,
+            };
+        }
+        Ok(expr)
+    }
+
+    fn parse_equality_expr(&mut self) -> Result<Expr, TszError> {
+        let mut expr = self.parse_relational_expr()?;
+        loop {
+            let op = match self.peek().kind {
+                TokenKind::EqualEqual => Some(BinaryOp::Eq),
+                TokenKind::BangEqual => Some(BinaryOp::Ne),
+                _ => None,
+            };
+            let Some(op) = op else { break };
+            self.bump();
+            let rhs = self.parse_relational_expr()?;
+            let span = Span {
+                start: expr_span(&expr).start,
+                end: expr_span(&rhs).end,
+            };
+            expr = Expr::Binary {
+                op,
+                left: Box::new(expr),
+                right: Box::new(rhs),
+                span,
+            };
+        }
+        Ok(expr)
+    }
+
+    fn parse_relational_expr(&mut self) -> Result<Expr, TszError> {
+        let mut expr = self.parse_additive_expr()?;
+        loop {
+            let op = match self.peek().kind {
+                TokenKind::Less => Some(BinaryOp::Lt),
+                TokenKind::LessEqual => Some(BinaryOp::Le),
+                TokenKind::Greater => Some(BinaryOp::Gt),
+                TokenKind::GreaterEqual => Some(BinaryOp::Ge),
+                _ => None,
+            };
+            let Some(op) = op else { break };
+            self.bump();
+            let rhs = self.parse_additive_expr()?;
+            let span = Span {
+                start: expr_span(&expr).start,
+                end: expr_span(&rhs).end,
+            };
+            expr = Expr::Binary {
+                op,
+                left: Box::new(expr),
+                right: Box::new(rhs),
+                span,
+            };
+        }
+        Ok(expr)
+    }
+
     fn parse_additive_expr(&mut self) -> Result<Expr, TszError> {
         let mut expr = self.parse_multiplicative_expr()?;
         loop {
@@ -346,6 +446,18 @@ impl<'a> Parser<'a> {
                 end: expr_span(&expr).end,
             };
             return Ok(Expr::UnaryMinus {
+                expr: Box::new(expr),
+                span,
+            });
+        }
+        if self.eat(TokenKind::Bang) {
+            let bang_span = self.prev_span();
+            let expr = self.parse_unary_expr()?;
+            let span = Span {
+                start: bang_span.start,
+                end: expr_span(&expr).end,
+            };
+            return Ok(Expr::UnaryNot {
                 expr: Box::new(expr),
                 span,
             });
@@ -519,6 +631,7 @@ fn expr_span(expr: &Expr) -> Span {
         | Expr::String { span, .. } => *span,
         Expr::Ident { span, .. } => *span,
         Expr::UnaryMinus { span, .. } => *span,
+        Expr::UnaryNot { span, .. } => *span,
         Expr::Call { span, .. } => *span,
         Expr::Binary { span, .. } => *span,
     }

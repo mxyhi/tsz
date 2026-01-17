@@ -147,7 +147,7 @@ export function main(): bigint {
 - 支持 `const`（函数体内局部常量；编译期常量绑定）：
   - `const <name>: <type>? = <expr>;`
   - 规则：`<type>` 可省略，省略时从 `<expr>` 推断类型
-  - 约束：当前支持 `number/bigint/boolean/string`；`<expr>` 必须可在编译期折叠（字面量/一元负号/二元运算（`+ - * /`）/引用其他 `const`；其中 `boolean/string` 不支持一元负号）；必须先声明后使用；不可与模块级符号（函数/导入）重名
+  - 约束：当前支持 `number/bigint/boolean/string`；`<expr>` 必须可在编译期折叠（字面量/一元运算（`-` / `!`）/二元运算（`+ - * / == != < <= > >= && ||`）/引用其他 `const`；其中 `boolean/string` 不支持一元负号）；必须先声明后使用；不可与模块级符号（函数/导入）重名
 
 - 支持赋值（仅 `let` 可写）：
   - `<name> = <expr>;`
@@ -176,8 +176,11 @@ export function main(): bigint {
 - `boolean` 字面量：`true` / `false`
 - `string` 字面量（UTF-8）
 - 标识符：局部变量/常量/参数引用（来自 `let/const/params`；`const` 当前会被编译期内联）
-- 一元负号：`-<expr>`
-- 二元运算：`+ - * /`（仅支持 `number/bigint`，且左右类型必须一致；`* /` 优先级高于 `+ -`）
+- 一元运算：`-<expr>` / `!<expr>`（`!` 仅支持 `boolean`）
+- 二元运算（算术）：`+ - * /`（仅支持 `number/bigint`，且左右类型必须一致）
+- 二元运算（比较）：`== != < <= > >=`（`< <= > >=` 仅支持 `number/bigint`；`== !=` 支持 `number/bigint/boolean`；左右类型必须一致；结果为 `boolean`）
+- 二元运算（逻辑）：`&& ||`（仅支持 `boolean`；结果为 `boolean`；短路求值）
+- 优先级（高 → 低）：`!` > `* /` > `+ -` > `< <= > >=` > `== !=` > `&&` > `||`（均为左结合）
 - 括号：`(<expr>)`
 - 函数调用：`foo(<expr>, <expr>, ...)`
 

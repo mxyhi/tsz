@@ -95,6 +95,7 @@ pub enum HirExpr {
     Param { param: HirParamId, span: Span },
     Local { local: HirLocalId, span: Span },
     UnaryMinus { expr: Box<HirExpr>, span: Span },
+    UnaryNot { expr: Box<HirExpr>, span: Span },
     Call {
         callee: HirFuncId,
         args: Vec<HirExpr>,
@@ -114,4 +115,12 @@ pub enum HirBinaryOp {
     Sub,
     Mul,
     Div,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    And,
+    Or,
 }

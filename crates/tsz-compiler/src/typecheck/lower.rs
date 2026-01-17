@@ -222,6 +222,22 @@ fn lower_expr_in_function(
                 }),
             }
         }
+        Expr::UnaryNot { expr, span } => {
+            let (inner, ty) = lower_expr_in_function(module_idx, expr, scopes, func_infos, locals)?;
+            if ty != Type::Bool {
+                return Err(TszError::Type {
+                    message: "Logical not only supports boolean".to_string(),
+                    span: *span,
+                });
+            }
+            Ok((
+                HirExpr::UnaryNot {
+                    expr: Box::new(inner),
+                    span: *span,
+                },
+                Type::Bool,
+            ))
+        }
         Expr::Call { callee, args, span } => {
             let scope = scopes.get(module_idx).ok_or_else(|| TszError::Type {
                 message: "Module scope index out of bounds (internal error)".to_string(),
@@ -274,44 +290,7 @@ fn lower_expr_in_function(
                 callee_info.return_type,
             ))
         }
-        Expr::Binary { op, left, right, span } => {
-            let (hir_left, left_ty) = lower_expr_in_function(module_idx, left, scopes, func_infos, locals)?;
-            let (hir_right, right_ty) = lower_expr_in_function(module_idx, right, scopes, func_infos, locals)?;
-            if left_ty != right_ty {
-                return Err(TszError::Type {
-                    message: format!(
-                        "Binary operator type mismatch: left is {:?}, right is {:?}",
-                        left_ty, right_ty
-                    ),
-                    span: *span,
-                });
-            }
-            match left_ty {
-                Type::Number | Type::BigInt => {}
-                Type::Void | Type::Bool | Type::String => {
-                    return Err(TszError::Type {
-                        message: "Binary operators only support number/bigint".to_string(),
-                        span: *span,
-                    });
-                }
-            }
-
-            let hir_op = match op {
-                BinaryOp::Add => HirBinaryOp::Add,
-                BinaryOp::Sub => HirBinaryOp::Sub,
-                BinaryOp::Mul => HirBinaryOp::Mul,
-                BinaryOp::Div => HirBinaryOp::Div,
-            };
-            Ok((
-                HirExpr::Binary {
-                    op: hir_op,
-                    left: Box::new(hir_left),
-                    right: Box::new(hir_right),
-                    span: *span,
-                },
-                left_ty,
-            ))
-        }
+        Expr::Binary { op, left, right, span } => lower_binary_expr(module_idx, op, left, right, *span, scopes, func_infos, locals),
     }
 }
 
@@ -348,7 +327,171 @@ fn ast_expr_span(expr: &Expr) -> Span {
         | Expr::String { span, .. }
         | Expr::Ident { span, .. }
         | Expr::UnaryMinus { span, .. }
+        | Expr::UnaryNot { span, .. }
         | Expr::Call { span, .. }
         | Expr::Binary { span, .. } => *span,
     }
+}
+
+fn lower_binary_expr(
+    module_idx: usize,
+    op: &BinaryOp,
+    left: &Expr,
+    right: &Expr,
+    span: Span,
+    scopes: &[HashMap<String, usize>],
+    func_infos: &[FuncInfo],
+    locals: &LocalScopes,
+) -> Result<(HirExpr, Type), TszError> {
+    let (hir_left, left_ty) = lower_expr_in_function(module_idx, left, scopes, func_infos, locals)?;
+    let (hir_right, right_ty) = lower_expr_in_function(module_idx, right, scopes, func_infos, locals)?;
+    if left_ty != right_ty {
+        return Err(TszError::Type {
+            message: format!(
+                "Binary operator type mismatch: left is {:?}, right is {:?}",
+                left_ty, right_ty
+            ),
+            span,
+        });
+    }
+
+    match *op {
+        BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => {
+            lower_arithmetic_binary(*op, hir_left, hir_right, left_ty, span)
+        }
+        BinaryOp::Eq | BinaryOp::Ne => lower_equality_binary(*op, hir_left, hir_right, left_ty, span),
+        BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
+            lower_relational_binary(*op, hir_left, hir_right, left_ty, span)
+        }
+        BinaryOp::And | BinaryOp::Or => lower_logical_binary(*op, hir_left, hir_right, left_ty, span),
+    }
+}
+
+fn lower_arithmetic_binary(
+    op: BinaryOp,
+    left: HirExpr,
+    right: HirExpr,
+    left_ty: Type,
+    span: Span,
+) -> Result<(HirExpr, Type), TszError> {
+    match left_ty {
+        Type::Number | Type::BigInt => {}
+        Type::Void | Type::Bool | Type::String => {
+            return Err(TszError::Type {
+                message: "Binary operators only support number/bigint".to_string(),
+                span,
+            });
+        }
+    }
+    let hir_op = match op {
+        BinaryOp::Add => HirBinaryOp::Add,
+        BinaryOp::Sub => HirBinaryOp::Sub,
+        BinaryOp::Mul => HirBinaryOp::Mul,
+        BinaryOp::Div => HirBinaryOp::Div,
+        _ => unreachable!("checked arithmetic op"),
+    };
+    Ok((
+        HirExpr::Binary {
+            op: hir_op,
+            left: Box::new(left),
+            right: Box::new(right),
+            span,
+        },
+        left_ty,
+    ))
+}
+
+fn lower_equality_binary(
+    op: BinaryOp,
+    left: HirExpr,
+    right: HirExpr,
+    left_ty: Type,
+    span: Span,
+) -> Result<(HirExpr, Type), TszError> {
+    match left_ty {
+        Type::Number | Type::BigInt | Type::Bool => {}
+        Type::String | Type::Void => {
+            return Err(TszError::Type {
+                message: "Equality only supports number/bigint/boolean".to_string(),
+                span,
+            });
+        }
+    }
+    let hir_op = match op {
+        BinaryOp::Eq => HirBinaryOp::Eq,
+        BinaryOp::Ne => HirBinaryOp::Ne,
+        _ => unreachable!("checked eq op"),
+    };
+    Ok((
+        HirExpr::Binary {
+            op: hir_op,
+            left: Box::new(left),
+            right: Box::new(right),
+            span,
+        },
+        Type::Bool,
+    ))
+}
+
+fn lower_relational_binary(
+    op: BinaryOp,
+    left: HirExpr,
+    right: HirExpr,
+    left_ty: Type,
+    span: Span,
+) -> Result<(HirExpr, Type), TszError> {
+    match left_ty {
+        Type::Number | Type::BigInt => {}
+        Type::Bool | Type::String | Type::Void => {
+            return Err(TszError::Type {
+                message: "Relational operators only support number/bigint".to_string(),
+                span,
+            });
+        }
+    }
+    let hir_op = match op {
+        BinaryOp::Lt => HirBinaryOp::Lt,
+        BinaryOp::Le => HirBinaryOp::Le,
+        BinaryOp::Gt => HirBinaryOp::Gt,
+        BinaryOp::Ge => HirBinaryOp::Ge,
+        _ => unreachable!("checked relational op"),
+    };
+    Ok((
+        HirExpr::Binary {
+            op: hir_op,
+            left: Box::new(left),
+            right: Box::new(right),
+            span,
+        },
+        Type::Bool,
+    ))
+}
+
+fn lower_logical_binary(
+    op: BinaryOp,
+    left: HirExpr,
+    right: HirExpr,
+    left_ty: Type,
+    span: Span,
+) -> Result<(HirExpr, Type), TszError> {
+    if left_ty != Type::Bool {
+        return Err(TszError::Type {
+            message: "Logical operators only support boolean".to_string(),
+            span,
+        });
+    }
+    let hir_op = match op {
+        BinaryOp::And => HirBinaryOp::And,
+        BinaryOp::Or => HirBinaryOp::Or,
+        _ => unreachable!("checked logical op"),
+    };
+    Ok((
+        HirExpr::Binary {
+            op: hir_op,
+            left: Box::new(left),
+            right: Box::new(right),
+            span,
+        },
+        Type::Bool,
+    ))
 }
