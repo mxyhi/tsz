@@ -22,10 +22,4 @@ cargo run -p tsz-cli -- run examples/const.ts
 
 见 `docs/tsz-spec.md`。
 
-## 路线图（语法）
-
-- [x] let（函数体内；块级作用域）
-- [x] const
-- [x] function v1（参数列表 / 多语句 block / 表达式扩展）
-
-更完整路线图见 [TODO.md](TODO.md)。
+## 路线图 [TODO.md](TODO.md)。
