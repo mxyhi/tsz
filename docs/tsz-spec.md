@@ -92,6 +92,11 @@ export function main(): bigint {
 
 ### 3.2 语句
 
+- 支持 `let`（函数体内局部变量；块级作用域）：
+  - `let <name>: <type>? = <expr>;`
+  - 规则：`<type>` 可省略，省略时从 `<expr>` 推断类型
+  - 约束：当前仅支持 `number/bigint`；必须先声明后使用；不可与模块级符号（函数/导入）重名
+
 - 支持 `console.log`（标准输出）：
   - `console.log();`
   - `console.log(<expr>, <expr>, ...);`
@@ -107,6 +112,7 @@ export function main(): bigint {
 - `number` 字面量（内部为 `f64`）
 - `bigint` 字面量（内部为 **定长** `i64`，例如 `42n`）
 - `string` 字面量（仅用于 `console.log`；不提供通用 string 运行时）
+- 标识符：局部变量引用（来自 `let`）
 - 一元负号：`-<expr>`
 - 0 参函数调用：`foo()`
 

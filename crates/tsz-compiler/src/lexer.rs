@@ -7,11 +7,13 @@ pub enum TokenKind {
     KwImport,
     KwFrom,
     KwReturn,
+    KwLet,
     Ident,
     Number,
     BigInt,
     String,
     Colon,
+    Equal,
     Semicolon,
     Comma,
     Dot,
@@ -128,6 +130,7 @@ impl<'a> Lexer<'a> {
             "import" => TokenKind::KwImport,
             "from" => TokenKind::KwFrom,
             "return" => TokenKind::KwReturn,
+            "let" => TokenKind::KwLet,
             _ => TokenKind::Ident,
         })
     }
@@ -266,6 +269,7 @@ impl<'a> Lexer<'a> {
 fn lex_single_char(b: u8) -> Option<TokenKind> {
     Some(match b {
         b':' => TokenKind::Colon,
+        b'=' => TokenKind::Equal,
         b';' => TokenKind::Semicolon,
         b',' => TokenKind::Comma,
         b'.' => TokenKind::Dot,

@@ -78,12 +78,41 @@ impl<'a> Parser<'a> {
     fn parse_stmt(&mut self) -> Result<Stmt, TszError> {
         match self.peek().kind {
             TokenKind::KwReturn => self.parse_return_stmt(),
+            TokenKind::KwLet => self.parse_let_stmt(),
             TokenKind::Ident => self.parse_console_log_stmt(),
             _ => Err(TszError::Parse {
-                message: "当前语句只支持 console.log(...) 或 return".to_string(),
+                message: "当前语句只支持 let/console.log(...)/return".to_string(),
                 span: self.peek().span,
             }),
         }
+    }
+
+    fn parse_let_stmt(&mut self) -> Result<Stmt, TszError> {
+        let start = self.expect(TokenKind::KwLet)?.span;
+        let name_tok = self.expect(TokenKind::Ident)?;
+        let name_span = name_tok.span;
+        let name = self.slice(name_tok.span).to_string();
+
+        let annotated_type = if self.eat(TokenKind::Colon) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
+        self.expect(TokenKind::Equal)?;
+        let expr = self.parse_expr()?;
+        let semi = self.expect(TokenKind::Semicolon)?.span;
+
+        Ok(Stmt::Let {
+            name,
+            name_span,
+            annotated_type,
+            expr,
+            span: Span {
+                start: start.start,
+                end: semi.end,
+            },
+        })
     }
 
     fn parse_console_log_stmt(&mut self) -> Result<Stmt, TszError> {
@@ -252,23 +281,21 @@ impl<'a> Parser<'a> {
             TokenKind::Ident => {
                 let ident = self.bump();
                 let name = self.slice(ident.span).to_string();
-                if !self.eat(TokenKind::LParen) {
-                    return Err(TszError::Parse {
-                        message: "暂只支持 0 参调用表达式：foo()".to_string(),
-                        span: ident.span,
-                    });
+                if self.eat(TokenKind::LParen) {
+                    let rparen = self.expect(TokenKind::RParen)?.span;
+                    Ok(Expr::Call {
+                        callee: name,
+                        span: Span {
+                            start: ident.span.start,
+                            end: rparen.end,
+                        },
+                    })
+                } else {
+                    Ok(Expr::Ident { name, span: ident.span })
                 }
-                let rparen = self.expect(TokenKind::RParen)?.span;
-                Ok(Expr::Call {
-                    callee: name,
-                    span: Span {
-                        start: ident.span.start,
-                        end: rparen.end,
-                    },
-                })
             }
             _ => Err(TszError::Parse {
-                message: "暂只支持 number/bigint 字面量或 0 参函数调用".to_string(),
+                message: "暂只支持字面量/标识符/0 参函数调用/一元负号".to_string(),
                 span: tok.span,
             }),
         }
@@ -356,6 +383,7 @@ impl<'a> Parser<'a> {
 fn expr_span(expr: &Expr) -> Span {
     match expr {
         Expr::Number { span, .. } | Expr::BigInt { span, .. } | Expr::String { span, .. } => *span,
+        Expr::Ident { span, .. } => *span,
         Expr::UnaryMinus { span, .. } => *span,
         Expr::Call { span, .. } => *span,
     }
@@ -416,5 +444,19 @@ export function main(): void {
             panic!("expected console.log stmt");
         };
         assert_eq!(args.len(), 3);
+    }
+
+    #[test]
+    fn parse_let_stmt() {
+        let src = r#"
+export function main(): bigint {
+  let x: bigint = 1n;
+  let y = -x;
+  return y;
+}
+"#;
+        let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+        assert_eq!(m.functions.len(), 1);
+        assert_eq!(m.functions[0].body.len(), 3);
     }
 }

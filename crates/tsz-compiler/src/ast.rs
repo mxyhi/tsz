@@ -41,6 +41,14 @@ pub enum Stmt {
     Return { expr: Option<Expr>, span: Span },
     /// 标准输出：`console.log(a, b, c);`
     ConsoleLog { args: Vec<Expr>, span: Span },
+    /// 局部变量声明：`let <name>: <type>? = <expr>;`
+    Let {
+        name: String,
+        name_span: Span,
+        annotated_type: Option<Type>,
+        expr: Expr,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -48,6 +56,7 @@ pub enum Expr {
     Number { value: f64, span: Span },
     BigInt { value: i64, span: Span },
     String { value: String, span: Span },
+    Ident { name: String, span: Span },
     UnaryMinus { expr: Box<Expr>, span: Span },
     Call { callee: String, span: Span },
 }

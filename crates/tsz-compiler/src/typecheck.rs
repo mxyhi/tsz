@@ -1,13 +1,15 @@
-use crate::{Expr, HirBody, HirConsoleLog, HirExpr, HirFunction, HirProgram, HirReturn, Program, Span, Stmt, TszError, Type};
+use crate::{
+    Expr, HirExpr, HirFunction, HirLocal, HirLocalId, HirProgram, HirStmt, Program, Span, Stmt, TszError, Type,
+};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 /// 语义分析 + 最小类型检查，并输出 HIR 供后续 codegen 使用。
 ///
-/// TSZ v0 约束（当前实现）：
+/// TSZ v0/v0.1 约束（当前实现）：
 /// - 仅支持 0 参数函数
-/// - 函数体仅支持若干条 `console.log(...)` + 最后一条 `return`
-/// - 表达式仅支持字面量、负号、0 参调用
+/// - 函数体支持 `let`/`console.log(...)`，且最后一条语句必须是 `return`
+/// - 表达式支持：字面量、标识符（局部变量）、一元负号、0 参调用
 /// - import 仅支持 `import { a, b } from "<specifier>";`
 pub fn analyze(program: &Program) -> Result<HirProgram, TszError> {
     let module_index = build_module_index(program)?;
@@ -233,55 +235,13 @@ fn build_hir_functions(
             span: info.span,
         })?;
 
-        match func.return_type {
-            Type::Number | Type::BigInt | Type::Void => {}
-            Type::Bool | Type::String => {
-                return Err(TszError::Type {
-                    message: "当前最小实现只支持 number/bigint/void 作为函数返回类型".to_string(),
-                    span: func.span,
-                });
-            }
-        }
+        validate_user_fn_return_type(func.return_type, func.span)?;
 
-        let Some(last_stmt) = func.body.last() else {
-            return Err(TszError::Type {
-                message: "空函数体（当前最小实现要求必须有 return）".to_string(),
-                span: func.span,
-            });
-        };
-        let Stmt::Return { expr, span } = last_stmt else {
-            return Err(TszError::Type {
-                message: "函数体最后一条语句必须是 return".to_string(),
-                span: func.span,
-            });
-        };
-
-        let mut logs = Vec::new();
-        for stmt in &func.body[..func.body.len() - 1] {
-            let Stmt::ConsoleLog { args, span } = stmt else {
-                return Err(TszError::Type {
-                    message: "return 必须是函数体最后一条语句".to_string(),
-                    span: stmt_span(stmt),
-                });
-            };
-            let hir_args = lower_console_log_args(info.module_idx, args, scopes, func_infos, *span)?;
-            logs.push(HirConsoleLog { args: hir_args, span: *span });
-        }
-
-        let (hir_expr, expr_ty) = match expr {
-            None => (None, Type::Void),
-            Some(e) => {
-                let (hir, ty) = lower_expr_in_module(info.module_idx, e, scopes, func_infos)?;
-                (Some(hir), ty)
-            }
-        };
-
-        if func.return_type != expr_ty {
-            return Err(TszError::Type {
-                message: format!("返回类型不匹配：声明为 {:?}，实际为 {:?}", func.return_type, expr_ty),
-                span: *span,
-            });
-        }
+        let module_scope = scopes.get(info.module_idx).ok_or_else(|| TszError::Type {
+            message: "模块作用域索引越界（内部错误）".to_string(),
+            span: func.span,
+        })?;
+        let (locals, body) = lower_function_body(info.module_idx, func, module_scope, scopes, func_infos)?;
 
         let symbol = if id == entry_id {
             "__tsz_user_main".to_string()
@@ -292,13 +252,8 @@ fn build_hir_functions(
         out.push(HirFunction {
             symbol,
             return_type: func.return_type,
-            body: HirBody {
-                logs,
-                ret: HirReturn {
-                    expr: hir_expr,
-                    span: *span,
-                },
-            },
+            locals,
+            body,
             source: crate::HirSourceInfo {
                 module_path: module.path.clone(),
                 name: func.name.clone(),
@@ -311,18 +266,287 @@ fn build_hir_functions(
     Ok(out)
 }
 
-fn lower_expr_in_module(
+fn validate_user_fn_return_type(return_type: Type, span: Span) -> Result<(), TszError> {
+    match return_type {
+        Type::Number | Type::BigInt | Type::Void => Ok(()),
+        Type::Bool | Type::String => Err(TszError::Type {
+            message: "当前最小实现只支持 number/bigint/void 作为函数返回类型".to_string(),
+            span,
+        }),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LocalInfo {
+    id: HirLocalId,
+    ty: Type,
+}
+
+#[derive(Debug)]
+struct LocalScopes {
+    stack: Vec<HashMap<String, LocalInfo>>,
+}
+
+impl LocalScopes {
+    fn new() -> Self {
+        Self {
+            // 当前还没有嵌套 block；但用栈结构能自然扩展到未来的 `{ ... }`。
+            stack: vec![HashMap::new()],
+        }
+    }
+
+    fn lookup(&self, name: &str) -> Option<LocalInfo> {
+        self.stack.iter().rev().find_map(|scope| scope.get(name).copied())
+    }
+
+    fn insert_current(&mut self, name: String, info: LocalInfo, name_span: Span) -> Result<(), TszError> {
+        let current = self.stack.last_mut().expect("at least one scope");
+        if current.contains_key(&name) {
+            return Err(TszError::Type {
+                message: format!("重复声明的局部变量: {name}"),
+                span: name_span,
+            });
+        }
+        current.insert(name, info);
+        Ok(())
+    }
+}
+
+struct LowerCtx<'a> {
+    module_idx: usize,
+    module_scope: &'a HashMap<String, usize>,
+    scopes: &'a [HashMap<String, usize>],
+    func_infos: &'a [FuncInfo],
+}
+
+struct LowerFnState {
+    locals: Vec<HirLocal>,
+    local_scopes: LocalScopes,
+    body: Vec<HirStmt>,
+}
+
+impl LowerFnState {
+    fn new(stmt_count: usize) -> Self {
+        Self {
+            locals: Vec::new(),
+            local_scopes: LocalScopes::new(),
+            body: Vec::with_capacity(stmt_count),
+        }
+    }
+}
+
+fn lower_function_body(
+    module_idx: usize,
+    func: &crate::FunctionDecl,
+    module_scope: &HashMap<String, usize>,
+    scopes: &[HashMap<String, usize>],
+    func_infos: &[FuncInfo],
+) -> Result<(Vec<HirLocal>, Vec<HirStmt>), TszError> {
+    if func.body.is_empty() {
+        return Err(TszError::Type {
+            message: "空函数体（当前最小实现要求必须有 return）".to_string(),
+            span: func.span,
+        });
+    }
+
+    let ctx = LowerCtx {
+        module_idx,
+        module_scope,
+        scopes,
+        func_infos,
+    };
+    let mut state = LowerFnState::new(func.body.len());
+
+    let (last, prefix) = func.body.split_last().expect("checked non-empty");
+    for stmt in prefix {
+        match stmt {
+            Stmt::Let {
+                name,
+                name_span,
+                annotated_type,
+                expr,
+                span,
+            } => lower_let_stmt(&ctx, &mut state, name, *name_span, *annotated_type, expr, *span)?,
+            Stmt::ConsoleLog { args, span } => lower_console_log_stmt(&ctx, &mut state, args, *span)?,
+            Stmt::Return { span, .. } => {
+                return Err(TszError::Type {
+                    message: "return 必须是函数体最后一条语句".to_string(),
+                    span: *span,
+                });
+            }
+        }
+    }
+
+    match last {
+        Stmt::Return { expr, span } => lower_return_stmt(&ctx, &mut state, func.return_type, expr, *span)?,
+        Stmt::Let { span, .. } | Stmt::ConsoleLog { span, .. } => {
+            return Err(TszError::Type {
+                message: "函数体最后一条语句必须是 return".to_string(),
+                span: *span,
+            });
+        }
+    }
+
+    Ok((state.locals, state.body))
+}
+
+fn lower_let_stmt(
+    ctx: &LowerCtx<'_>,
+    state: &mut LowerFnState,
+    name: &str,
+    name_span: Span,
+    annotated_type: Option<Type>,
+    expr: &Expr,
+    span: Span,
+) -> Result<(), TszError> {
+    // 为了避免 `foo`/`foo()` 在“变量 vs 函数”间产生歧义，先禁止与模块级符号重名。
+    if ctx.module_scope.contains_key(name) {
+        return Err(TszError::Type {
+            message: format!("局部变量与函数/导入重名: {name}"),
+            span: name_span,
+        });
+    }
+
+    let (hir_init, init_ty) =
+        lower_expr_in_function(ctx.module_idx, expr, ctx.scopes, ctx.func_infos, &state.local_scopes)?;
+
+    // 当前 let 仅支持 number/bigint：避免引入 string/bool 运行时语义。
+    validate_local_value_type(init_ty, ast_expr_span(expr))?;
+
+    let declared_ty = annotated_type.unwrap_or(init_ty);
+    validate_local_decl_type(declared_ty, name_span)?;
+
+    if declared_ty != init_ty {
+        return Err(TszError::Type {
+            message: format!("let 初始化表达式类型不匹配：声明为 {:?}，实际为 {:?}", declared_ty, init_ty),
+            span: ast_expr_span(expr),
+        });
+    }
+
+    let local_id = state.locals.len();
+    state.locals.push(HirLocal {
+        name: name.to_string(),
+        ty: declared_ty,
+        span: name_span,
+    });
+    state.local_scopes.insert_current(
+        name.to_string(),
+        LocalInfo {
+            id: local_id,
+            ty: declared_ty,
+        },
+        name_span,
+    )?;
+
+    state.body.push(HirStmt::Let {
+        local: local_id,
+        init: hir_init,
+        span,
+    });
+    Ok(())
+}
+
+fn lower_console_log_stmt(
+    ctx: &LowerCtx<'_>,
+    state: &mut LowerFnState,
+    args: &[Expr],
+    span: Span,
+) -> Result<(), TszError> {
+    let hir_args = lower_console_log_args(
+        ctx.module_idx,
+        args,
+        ctx.scopes,
+        ctx.func_infos,
+        &state.local_scopes,
+        span,
+    )?;
+    state.body.push(HirStmt::ConsoleLog { args: hir_args, span });
+    Ok(())
+}
+
+fn lower_return_stmt(
+    ctx: &LowerCtx<'_>,
+    state: &mut LowerFnState,
+    return_type: Type,
+    expr: &Option<Expr>,
+    span: Span,
+) -> Result<(), TszError> {
+    if return_type == Type::Void && expr.is_some() {
+        return Err(TszError::Type {
+            message: "void 函数只允许 `return;`".to_string(),
+            span,
+        });
+    }
+
+    let (hir_expr, expr_ty) = match expr {
+        None => (None, Type::Void),
+        Some(e) => {
+            let (hir, ty) = lower_expr_in_function(ctx.module_idx, e, ctx.scopes, ctx.func_infos, &state.local_scopes)?;
+            (Some(hir), ty)
+        }
+    };
+
+    if return_type != expr_ty {
+        return Err(TszError::Type {
+            message: format!("返回类型不匹配：声明为 {:?}，实际为 {:?}", return_type, expr_ty),
+            span,
+        });
+    }
+
+    state.body.push(HirStmt::Return { expr: hir_expr, span });
+    Ok(())
+}
+
+fn validate_local_decl_type(ty: Type, span: Span) -> Result<(), TszError> {
+    match ty {
+        Type::Number | Type::BigInt => Ok(()),
+        Type::Void => Err(TszError::Type {
+            message: "let 变量类型不能是 void".to_string(),
+            span,
+        }),
+        Type::Bool | Type::String => Err(TszError::Type {
+            message: "当前 let 仅支持 number/bigint".to_string(),
+            span,
+        }),
+    }
+}
+
+fn validate_local_value_type(ty: Type, span: Span) -> Result<(), TszError> {
+    match ty {
+        Type::Number | Type::BigInt => Ok(()),
+        Type::Void => Err(TszError::Type {
+            message: "let 初始化表达式不能是 void".to_string(),
+            span,
+        }),
+        Type::Bool | Type::String => Err(TszError::Type {
+            message: "当前 let 初始化表达式仅支持 number/bigint".to_string(),
+            span,
+        }),
+    }
+}
+
+fn lower_expr_in_function(
     module_idx: usize,
     expr: &Expr,
     scopes: &[HashMap<String, usize>],
     func_infos: &[FuncInfo],
+    locals: &LocalScopes,
 ) -> Result<(HirExpr, Type), TszError> {
     match expr {
         Expr::Number { value, span } => Ok((HirExpr::Number { value: *value, span: *span }, Type::Number)),
         Expr::BigInt { value, span } => Ok((HirExpr::BigInt { value: *value, span: *span }, Type::BigInt)),
         Expr::String { value, span } => Ok((HirExpr::String { value: value.clone(), span: *span }, Type::String)),
+        Expr::Ident { name, span } => {
+            let Some(info) = locals.lookup(name) else {
+                return Err(TszError::Type {
+                    message: format!("未定义的变量: {name}"),
+                    span: *span,
+                });
+            };
+            Ok((HirExpr::Local { local: info.id, span: *span }, info.ty))
+        }
         Expr::UnaryMinus { expr, span } => {
-            let (inner, ty) = lower_expr_in_module(module_idx, expr, scopes, func_infos)?;
+            let (inner, ty) = lower_expr_in_function(module_idx, expr, scopes, func_infos, locals)?;
             match ty {
                 Type::Number | Type::BigInt => Ok((
                     HirExpr::UnaryMinus {
@@ -363,15 +587,17 @@ fn lower_console_log_args(
     args: &[Expr],
     scopes: &[HashMap<String, usize>],
     func_infos: &[FuncInfo],
+    locals: &LocalScopes,
     span: Span,
 ) -> Result<Vec<HirExpr>, TszError> {
     let mut out = Vec::with_capacity(args.len());
     for arg in args {
-        let (hir, ty) = lower_expr_in_module(module_idx, arg, scopes, func_infos)?;
+        let (hir, ty) = lower_expr_in_function(module_idx, arg, scopes, func_infos, locals)?;
         match ty {
             Type::Number | Type::BigInt => {}
             Type::String => {
-                if !matches!(arg, Expr::String { .. }) {
+                // 当前 string 运行时仅支持“字符串字面量直出”。
+                if !matches!(hir, HirExpr::String { .. }) {
                     return Err(TszError::Type {
                         message: "当前 string 仅支持字符串字面量".to_string(),
                         span,
@@ -390,10 +616,14 @@ fn lower_console_log_args(
     Ok(out)
 }
 
-fn stmt_span(stmt: &Stmt) -> Span {
-    match stmt {
-        Stmt::Return { span, .. } => *span,
-        Stmt::ConsoleLog { span, .. } => *span,
+fn ast_expr_span(expr: &Expr) -> Span {
+    match expr {
+        Expr::Number { span, .. }
+        | Expr::BigInt { span, .. }
+        | Expr::String { span, .. }
+        | Expr::Ident { span, .. }
+        | Expr::UnaryMinus { span, .. }
+        | Expr::Call { span, .. } => *span,
     }
 }
 

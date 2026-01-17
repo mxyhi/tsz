@@ -1,8 +1,8 @@
-use crate::{HirConsoleLog, HirExpr, HirProgram, OptLevel, TszError, Type};
+use crate::{HirExpr, HirProgram, HirStmt, OptLevel, TszError, Type};
 use cranelift_codegen::ir::InstBuilder;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::{ir, isa};
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as _};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::collections::HashMap;
@@ -115,38 +115,18 @@ fn define_user_fn(
     fn_builder.switch_to_block(block);
     fn_builder.seal_block(block);
 
-    for log in &f.body.logs {
-        codegen_console_log_stmt(
-            &mut fn_builder,
-            object_module,
-            program,
-            func_ids,
-            runtime,
-            string_pool,
-            log,
-        )?;
-    }
-
-    match f.return_type {
-        Type::Void => {
-            // typecheck 已保证 return; / expr 不存在
-            fn_builder.ins().return_(&[]);
-        }
-        Type::Number | Type::BigInt => {
-            let Some(expr) = &f.body.ret.expr else {
-                return Err(TszError::Codegen {
-                    message: format!("缺少返回值表达式: {}", f.source.name),
-                });
-            };
-            let v = codegen_expr(&mut fn_builder, object_module, program, func_ids, expr)?;
-            fn_builder.ins().return_(&[v]);
-        }
-        Type::Bool | Type::String => {
-            return Err(TszError::Codegen {
-                message: "当前最小实现只支持 number/bigint/void".to_string(),
-            });
-        }
-    }
+    // 声明局部变量（SSA 变量），并按 HirLocalId 建立索引映射。
+    let local_vars = declare_local_vars(&mut fn_builder, &f.locals)?;
+    codegen_user_body(
+        &mut fn_builder,
+        object_module,
+        program,
+        func_ids,
+        runtime,
+        string_pool,
+        f,
+        &local_vars,
+    )?;
 
     fn_builder.finalize();
 
@@ -157,6 +137,128 @@ fn define_user_fn(
         })?;
     object_module.clear_context(&mut ctx);
     Ok(())
+}
+
+fn declare_local_vars(
+    fn_builder: &mut FunctionBuilder<'_>,
+    locals: &[crate::HirLocal],
+) -> Result<Vec<Variable>, TszError> {
+    let mut local_vars = Vec::with_capacity(locals.len());
+    for (idx, local) in locals.iter().enumerate() {
+        let var = Variable::from_u32(u32::try_from(idx).map_err(|_| TszError::Codegen {
+            message: "局部变量数量过多（超过 u32）".to_string(),
+        })?);
+        let clif_ty = match local.ty {
+            Type::Number => ir::types::F64,
+            Type::BigInt => ir::types::I64,
+            Type::Void | Type::Bool | Type::String => {
+                return Err(TszError::Codegen {
+                    message: format!("不支持的局部变量类型: {:?}", local.ty),
+                });
+            }
+        };
+        fn_builder.declare_var(var, clif_ty);
+        local_vars.push(var);
+    }
+    Ok(local_vars)
+}
+
+fn codegen_user_body(
+    builder: &mut FunctionBuilder<'_>,
+    object_module: &mut ObjectModule,
+    program: &HirProgram,
+    func_ids: &[FuncId],
+    runtime: &RuntimeFuncs,
+    string_pool: &mut StringPool,
+    func: &crate::HirFunction,
+    local_vars: &[Variable],
+) -> Result<(), TszError> {
+    let (last, prefix) = func
+        .body
+        .split_last()
+        .ok_or_else(|| TszError::Codegen {
+            message: format!("空函数体（缺少 return）: {}", func.source.name),
+        })?;
+
+    for stmt in prefix {
+        match stmt {
+            HirStmt::Let { local, init, .. } => {
+                codegen_let_stmt(builder, object_module, program, func_ids, func, local_vars, *local, init)?
+            }
+            HirStmt::ConsoleLog { args, .. } => codegen_console_log_stmt(
+                builder,
+                object_module,
+                program,
+                func_ids,
+                runtime,
+                string_pool,
+                func,
+                local_vars,
+                args,
+            )?,
+            HirStmt::Return { .. } => {
+                return Err(TszError::Codegen {
+                    message: format!("return 必须是函数体最后一条语句: {}", func.source.name),
+                });
+            }
+        }
+    }
+
+    let HirStmt::Return { expr, .. } = last else {
+        return Err(TszError::Codegen {
+            message: format!("缺少 return 结尾: {}", func.source.name),
+        });
+    };
+    codegen_return_stmt(builder, object_module, program, func_ids, func, local_vars, expr.as_ref())
+}
+
+fn codegen_let_stmt(
+    builder: &mut FunctionBuilder<'_>,
+    object_module: &mut ObjectModule,
+    program: &HirProgram,
+    func_ids: &[FuncId],
+    func: &crate::HirFunction,
+    local_vars: &[Variable],
+    local: usize,
+    init: &HirExpr,
+) -> Result<(), TszError> {
+    let var = local_vars.get(local).copied().ok_or_else(|| TszError::Codegen {
+        message: "局部变量索引越界（内部错误）".to_string(),
+    })?;
+    let v = codegen_expr(builder, object_module, program, func_ids, func, local_vars, init)?;
+    builder.def_var(var, v);
+    Ok(())
+}
+
+fn codegen_return_stmt(
+    builder: &mut FunctionBuilder<'_>,
+    object_module: &mut ObjectModule,
+    program: &HirProgram,
+    func_ids: &[FuncId],
+    func: &crate::HirFunction,
+    local_vars: &[Variable],
+    expr: Option<&HirExpr>,
+) -> Result<(), TszError> {
+    match func.return_type {
+        Type::Void => {
+            // typecheck 已保证 return; / expr 不存在
+            builder.ins().return_(&[]);
+            Ok(())
+        }
+        Type::Number | Type::BigInt => {
+            let Some(expr) = expr else {
+                return Err(TszError::Codegen {
+                    message: format!("缺少返回值表达式: {}", func.source.name),
+                });
+            };
+            let v = codegen_expr(builder, object_module, program, func_ids, func, local_vars, expr)?;
+            builder.ins().return_(&[v]);
+            Ok(())
+        }
+        Type::Bool | Type::String => Err(TszError::Codegen {
+            message: "当前最小实现只支持 number/bigint/void".to_string(),
+        }),
+    }
 }
 
 fn define_wrapper_main(
@@ -251,9 +353,11 @@ fn codegen_expr(
     object_module: &mut ObjectModule,
     program: &HirProgram,
     func_ids: &[FuncId],
+    func: &crate::HirFunction,
+    local_vars: &[Variable],
     expr: &HirExpr,
 ) -> Result<ir::Value, TszError> {
-    let ty = hir_expr_type(program, expr)?;
+    let ty = hir_expr_type(program, func, expr)?;
 
     match expr {
         HirExpr::Number { value, .. } => Ok(builder.ins().f64const(*value)),
@@ -261,8 +365,14 @@ fn codegen_expr(
         HirExpr::String { .. } => Err(TszError::Codegen {
             message: "string 表达式当前仅支持用于 console.log".to_string(),
         }),
+        HirExpr::Local { local, .. } => {
+            let var = local_vars.get(*local).copied().ok_or_else(|| TszError::Codegen {
+                message: "局部变量索引越界（内部错误）".to_string(),
+            })?;
+            Ok(builder.use_var(var))
+        }
         HirExpr::UnaryMinus { expr, .. } => {
-            let v = codegen_expr(builder, object_module, program, func_ids, expr)?;
+            let v = codegen_expr(builder, object_module, program, func_ids, func, local_vars, expr)?;
             match ty {
                 Type::BigInt => Ok(builder.ins().ineg(v)),
                 Type::Number => Ok(builder.ins().fneg(v)),
@@ -288,12 +398,19 @@ fn codegen_expr(
     }
 }
 
-fn hir_expr_type(program: &HirProgram, expr: &HirExpr) -> Result<Type, TszError> {
+fn hir_expr_type(program: &HirProgram, func: &crate::HirFunction, expr: &HirExpr) -> Result<Type, TszError> {
     Ok(match expr {
         HirExpr::Number { .. } => Type::Number,
         HirExpr::BigInt { .. } => Type::BigInt,
         HirExpr::String { .. } => Type::String,
-        HirExpr::UnaryMinus { expr, .. } => hir_expr_type(program, expr)?,
+        HirExpr::Local { local, .. } => func
+            .locals
+            .get(*local)
+            .ok_or_else(|| TszError::Codegen {
+                message: "局部变量索引越界（内部错误）".to_string(),
+            })?
+            .ty,
+        HirExpr::UnaryMinus { expr, .. } => hir_expr_type(program, func, expr)?,
         HirExpr::Call { callee, .. } => program
             .functions
             .get(*callee)
@@ -385,9 +502,11 @@ fn codegen_console_log_stmt(
     func_ids: &[FuncId],
     runtime: &RuntimeFuncs,
     string_pool: &mut StringPool,
-    log: &HirConsoleLog,
+    func: &crate::HirFunction,
+    local_vars: &[Variable],
+    args: &[HirExpr],
 ) -> Result<(), TszError> {
-    for (idx, arg) in log.args.iter().enumerate() {
+    for (idx, arg) in args.iter().enumerate() {
         if idx != 0 {
             call_runtime0(builder, object_module, runtime.log_space);
         }
@@ -398,6 +517,8 @@ fn codegen_console_log_stmt(
             func_ids,
             runtime,
             string_pool,
+            func,
+            local_vars,
             arg,
         )?;
     }
@@ -413,16 +534,18 @@ fn codegen_console_log_arg(
     func_ids: &[FuncId],
     runtime: &RuntimeFuncs,
     string_pool: &mut StringPool,
+    func: &crate::HirFunction,
+    local_vars: &[Variable],
     arg: &HirExpr,
 ) -> Result<(), TszError> {
-    match hir_expr_type(program, arg)? {
+    match hir_expr_type(program, func, arg)? {
         Type::Number => {
-            let v = codegen_expr(builder, object_module, program, func_ids, arg)?;
+            let v = codegen_expr(builder, object_module, program, func_ids, func, local_vars, arg)?;
             call_runtime1(builder, object_module, runtime.log_f64, v);
             Ok(())
         }
         Type::BigInt => {
-            let v = codegen_expr(builder, object_module, program, func_ids, arg)?;
+            let v = codegen_expr(builder, object_module, program, func_ids, func, local_vars, arg)?;
             call_runtime1(builder, object_module, runtime.log_i64, v);
             Ok(())
         }
