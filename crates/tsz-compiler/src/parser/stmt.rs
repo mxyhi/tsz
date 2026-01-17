@@ -4,6 +4,89 @@ use crate::{ast::*, Span, TszError};
 use super::{expr_span, Parser};
 
 impl<'a> Parser<'a> {
+    pub(super) fn parse_block_stmt(&mut self) -> Result<Stmt, TszError> {
+        let start = self.expect(TokenKind::LBrace)?.span;
+        let mut stmts = Vec::new();
+        while self.peek().kind != TokenKind::RBrace && !self.is_eof() {
+            stmts.push(self.parse_stmt()?);
+        }
+        let end = self.expect(TokenKind::RBrace)?.span;
+        Ok(Stmt::Block {
+            stmts,
+            span: Span {
+                start: start.start,
+                end: end.end,
+            },
+        })
+    }
+
+    pub(super) fn parse_if_stmt(&mut self) -> Result<Stmt, TszError> {
+        let start = self.expect(TokenKind::KwIf)?.span;
+        self.expect(TokenKind::LParen)?;
+        let cond = self.parse_expr()?;
+        self.expect(TokenKind::RParen)?;
+
+        let then_branch = Box::new(self.parse_stmt()?);
+
+        let else_branch = if self.eat(TokenKind::KwElse) {
+            Some(Box::new(self.parse_stmt()?))
+        } else {
+            None
+        };
+
+        let end = self.prev_span();
+        Ok(Stmt::If {
+            cond,
+            then_branch,
+            else_branch,
+            span: Span {
+                start: start.start,
+                end: end.end,
+            },
+        })
+    }
+
+    pub(super) fn parse_while_stmt(&mut self) -> Result<Stmt, TszError> {
+        let start = self.expect(TokenKind::KwWhile)?.span;
+        self.expect(TokenKind::LParen)?;
+        let cond = self.parse_expr()?;
+        self.expect(TokenKind::RParen)?;
+
+        let body = Box::new(self.parse_stmt()?);
+
+        let end = self.prev_span();
+        Ok(Stmt::While {
+            cond,
+            body,
+            span: Span {
+                start: start.start,
+                end: end.end,
+            },
+        })
+    }
+
+    pub(super) fn parse_break_stmt(&mut self) -> Result<Stmt, TszError> {
+        let start = self.expect(TokenKind::KwBreak)?.span;
+        let semi = self.expect(TokenKind::Semicolon)?.span;
+        Ok(Stmt::Break {
+            span: Span {
+                start: start.start,
+                end: semi.end,
+            },
+        })
+    }
+
+    pub(super) fn parse_continue_stmt(&mut self) -> Result<Stmt, TszError> {
+        let start = self.expect(TokenKind::KwContinue)?.span;
+        let semi = self.expect(TokenKind::Semicolon)?.span;
+        Ok(Stmt::Continue {
+            span: Span {
+                start: start.start,
+                end: semi.end,
+            },
+        })
+    }
+
     pub(super) fn parse_console_log_stmt(&mut self) -> Result<Stmt, TszError> {
         let start = self.peek().span;
         let console = self.expect(TokenKind::Ident)?;
@@ -105,4 +188,3 @@ impl<'a> Parser<'a> {
         })
     }
 }
-

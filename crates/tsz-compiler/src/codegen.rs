@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 mod expr;
 mod runtime;
+mod stmt;
 mod string_pool;
 mod user_fn;
 mod wrapper;
@@ -105,4 +106,3 @@ fn finalize_and_emit(object_module: ObjectModule) -> Result<Vec<u8>, TszError> {
         message: format!("emit object failed: {e}"),
     })
 }
-

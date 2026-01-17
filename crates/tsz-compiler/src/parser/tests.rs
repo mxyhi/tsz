@@ -188,3 +188,65 @@ export function main(): number {
     assert!(matches!(right.as_ref(), Expr::Binary { op: BinaryOp::Div, .. }));
 }
 
+#[test]
+fn parse_block_stmt() {
+    let src = r#"
+export function main(): void {
+  { let x = 1n; }
+  return;
+}
+"#;
+    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let f = &m.functions[0];
+    let Some(Stmt::Block { stmts, .. }) = f.body.first() else {
+        panic!("expected block stmt");
+    };
+    assert_eq!(stmts.len(), 1);
+}
+
+#[test]
+fn parse_if_else_stmt() {
+    let src = r#"
+export function main(): bigint {
+  if (true) { return 1n; } else { return 2n; }
+}
+"#;
+    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let f = &m.functions[0];
+    let Some(Stmt::If { else_branch, .. }) = f.body.first() else {
+        panic!("expected if stmt");
+    };
+    assert!(else_branch.is_some());
+}
+
+#[test]
+fn parse_while_stmt_with_break() {
+    let src = r#"
+export function main(): void {
+  while (true) {
+    break;
+  }
+  return;
+}
+"#;
+    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let f = &m.functions[0];
+    let Some(Stmt::While { .. }) = f.body.first() else {
+        panic!("expected while stmt");
+    };
+}
+
+#[test]
+fn parse_while_stmt_with_continue_single_stmt_body() {
+    let src = r#"
+export function main(): void {
+  while (true) continue;
+  return;
+}
+"#;
+    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let f = &m.functions[0];
+    let Some(Stmt::While { .. }) = f.body.first() else {
+        panic!("expected while stmt");
+    };
+}

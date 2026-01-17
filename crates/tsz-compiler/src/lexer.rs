@@ -9,6 +9,11 @@ pub enum TokenKind {
     KwReturn,
     KwLet,
     KwConst,
+    KwIf,
+    KwElse,
+    KwWhile,
+    KwBreak,
+    KwContinue,
     Ident,
     Number,
     BigInt,
@@ -181,6 +186,11 @@ impl<'a> Lexer<'a> {
             "return" => TokenKind::KwReturn,
             "let" => TokenKind::KwLet,
             "const" => TokenKind::KwConst,
+            "if" => TokenKind::KwIf,
+            "else" => TokenKind::KwElse,
+            "while" => TokenKind::KwWhile,
+            "break" => TokenKind::KwBreak,
+            "continue" => TokenKind::KwContinue,
             _ => TokenKind::Ident,
         })
     }

@@ -106,6 +106,22 @@ export function main(): bigint {
 
 ### 3.2 语句
 
+- 支持块语句（真正块级作用域，允许嵌套）：
+  - `{ <stmt>* }`
+  - 规则：块内声明的 `let/const` 只在该块及其子块内可见
+  - 允许空块
+
+- 支持 `if / else`：
+  - `if (<cond>) <stmt>`
+  - `if (<cond>) <stmt> else <stmt>`
+  - 规则：`<cond>` 的类型必须为 `boolean`
+  - `<stmt>` 可以是单语句或块 `{ ... }`
+
+- 支持 `while`（以及 `break/continue`）：
+  - `while (<cond>) <stmt>`
+  - 规则：`<cond>` 的类型必须为 `boolean`
+  - `break;` / `continue;` 仅允许出现在 `while` 的循环体内（按最近一层循环生效）
+
 - 支持 `let`（函数体内局部变量；块级作用域）：
   - `let <name>: <type>? = <expr>;`
   - 规则：`<type>` 可省略，省略时从 `<expr>` 推断类型
@@ -130,11 +146,11 @@ export function main(): bigint {
   - `console.log(<expr>, <expr>, ...);`
   - 规则：参数之间用空格分隔输出，末尾自动追加换行
   - 参数类型：`number` / `bigint` / `boolean` / `string`
-  - 约束：函数体允许写多条 `console.log(...)`，但最后一条语句必须是 `return`
 
 - 支持 `return`：
   - `return <expr>;`
   - `return;`（仅当函数返回类型为 `void`）
+  - 约束：非 `void` 函数要求“所有控制路径都必须返回一个值”；`void` 函数允许省略末尾 `return;`（隐式返回）
 
 ### 3.3 表达式
 

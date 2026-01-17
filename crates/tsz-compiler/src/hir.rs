@@ -21,7 +21,7 @@ pub struct HirFunction {
     pub params: Vec<HirParam>,
     /// Function-local variables (in declaration order).
     pub locals: Vec<HirLocal>,
-    /// Sequential statements (current constraint: the last statement must be `return`, no control flow).
+    /// Function body statements (structured control flow is allowed).
     pub body: Vec<HirStmt>,
 
     /// Only used for diagnostics and debugging.
@@ -64,6 +64,23 @@ pub enum HirStmt {
         value: HirExpr,
         span: Span,
     },
+    /// Conditional: `if (cond) { ... } else { ... }`
+    If {
+        cond: HirExpr,
+        then_body: Vec<HirStmt>,
+        else_body: Option<Vec<HirStmt>>,
+        span: Span,
+    },
+    /// Loop: `while (cond) { ... }`
+    While {
+        cond: HirExpr,
+        body: Vec<HirStmt>,
+        span: Span,
+    },
+    /// `break;` (only valid inside `while`)
+    Break { span: Span },
+    /// `continue;` (only valid inside `while`)
+    Continue { span: Span },
     /// Stdout: `console.log(a, b, c);`
     ConsoleLog { args: Vec<HirExpr>, span: Span },
     Return { expr: Option<HirExpr>, span: Span },

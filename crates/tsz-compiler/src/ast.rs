@@ -50,6 +50,21 @@ pub enum Stmt {
     Return { expr: Option<Expr>, span: Span },
     /// Stdout: `console.log(a, b, c);`
     ConsoleLog { args: Vec<Expr>, span: Span },
+    /// Block statement: `{ ... }` (introduces a new lexical scope).
+    Block { stmts: Vec<Stmt>, span: Span },
+    /// Conditional: `if (<cond>) <then> else <else>`
+    If {
+        cond: Expr,
+        then_branch: Box<Stmt>,
+        else_branch: Option<Box<Stmt>>,
+        span: Span,
+    },
+    /// Loop: `while (<cond>) <body>`
+    While { cond: Expr, body: Box<Stmt>, span: Span },
+    /// `break;` (only valid inside `while`)
+    Break { span: Span },
+    /// `continue;` (only valid inside `while`)
+    Continue { span: Span },
     /// Local variable declaration: `let <name>: <type>? = <expr>;`
     Let {
         name: String,

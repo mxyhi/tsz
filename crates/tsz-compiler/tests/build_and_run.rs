@@ -567,6 +567,259 @@ export function main(): bigint {
 }
 
 #[test]
+fn build_and_run_block_scope_shadowing_stdout() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("tokio runtime");
+
+    rt.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let entry = dir.path().join("main.ts");
+        write_file(
+            &entry,
+            r#"
+export function main(): bigint {
+  let x: bigint = 1n;
+  {
+    let x: bigint = 2n;
+    console.log(x);
+  }
+  console.log(x);
+  return x;
+}
+"#,
+        )
+        .expect("write");
+
+        let out_dir = tempfile::tempdir().map_err(|e| TszError::Io {
+            path: PathBuf::from("<tempdir>"),
+            source: e,
+        })?;
+        let output = out_dir.path().join(exe_name("tsz_test_out"));
+
+        build_executable(BuildOptions {
+            entry,
+            output: output.clone(),
+            opt_level: OptLevel::None,
+        })
+        .await?;
+
+        let out = tokio::process::Command::new(&output)
+            .output()
+            .await
+            .map_err(|e| TszError::Io {
+                path: output.clone(),
+                source: e,
+            })?;
+
+        assert_eq!(out.status.code().unwrap_or(1), 1);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "2\n1\n");
+        Ok::<(), TszError>(())
+    })
+    .expect("ok");
+}
+
+#[test]
+fn build_and_run_if_else_returns_without_trailing_return() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("tokio runtime");
+
+    rt.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let entry = dir.path().join("main.ts");
+        write_file(
+            &entry,
+            r#"
+export function main(): bigint {
+  let cond = false;
+  if (cond) { return 0n; } else { return 42n; }
+}
+"#,
+        )
+        .expect("write");
+
+        build_and_run(entry, 42).await
+    })
+    .expect("ok");
+}
+
+#[test]
+fn build_and_run_while_with_break_and_continue() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("tokio runtime");
+
+    rt.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let entry = dir.path().join("main.ts");
+        write_file(
+            &entry,
+            r#"
+export function main(): bigint {
+  let x: bigint = 0n;
+  let first = true;
+  while (true) {
+    if (first) {
+      first = false;
+      continue;
+    }
+    x = 42n;
+    break;
+  }
+  return x;
+}
+"#,
+        )
+        .expect("write");
+
+        build_and_run(entry, 42).await
+    })
+    .expect("ok");
+}
+
+#[test]
+fn type_error_break_outside_while() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("tokio runtime");
+
+    rt.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let entry = dir.path().join("main.ts");
+        write_file(
+            &entry,
+            r#"
+export function main(): void {
+  break;
+}
+"#,
+        )
+        .expect("write");
+
+        let out_dir = tempfile::tempdir().map_err(|e| TszError::Io {
+            path: PathBuf::from("<tempdir>"),
+            source: e,
+        })?;
+        let output = out_dir.path().join(exe_name("tsz_test_out"));
+
+        let err = build_executable(BuildOptions {
+            entry,
+            output,
+            opt_level: OptLevel::None,
+        })
+        .await
+        .expect_err("should fail");
+
+        match err {
+            TszError::Type { message, .. } => {
+                assert!(message.contains("break is only allowed inside while"), "unexpected: {message}");
+            }
+            other => panic!("expected type error, got: {other:?}"),
+        }
+        Ok::<(), TszError>(())
+    })
+    .expect("ok");
+}
+
+#[test]
+fn type_error_continue_outside_while() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("tokio runtime");
+
+    rt.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let entry = dir.path().join("main.ts");
+        write_file(
+            &entry,
+            r#"
+export function main(): void {
+  continue;
+}
+"#,
+        )
+        .expect("write");
+
+        let out_dir = tempfile::tempdir().map_err(|e| TszError::Io {
+            path: PathBuf::from("<tempdir>"),
+            source: e,
+        })?;
+        let output = out_dir.path().join(exe_name("tsz_test_out"));
+
+        let err = build_executable(BuildOptions {
+            entry,
+            output,
+            opt_level: OptLevel::None,
+        })
+        .await
+        .expect_err("should fail");
+
+        match err {
+            TszError::Type { message, .. } => {
+                assert!(
+                    message.contains("continue is only allowed inside while"),
+                    "unexpected: {message}"
+                );
+            }
+            other => panic!("expected type error, got: {other:?}"),
+        }
+        Ok::<(), TszError>(())
+    })
+    .expect("ok");
+}
+
+#[test]
+fn type_error_missing_return_in_non_void_with_if() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("tokio runtime");
+
+    rt.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let entry = dir.path().join("main.ts");
+        write_file(
+            &entry,
+            r#"
+export function main(): bigint {
+  if (true) { return 1n; }
+}
+"#,
+        )
+        .expect("write");
+
+        let out_dir = tempfile::tempdir().map_err(|e| TszError::Io {
+            path: PathBuf::from("<tempdir>"),
+            source: e,
+        })?;
+        let output = out_dir.path().join(exe_name("tsz_test_out"));
+
+        let err = build_executable(BuildOptions {
+            entry,
+            output,
+            opt_level: OptLevel::None,
+        })
+        .await
+        .expect_err("should fail");
+
+        match err {
+            TszError::Type { message, .. } => {
+                assert!(message.contains("Not all control paths return"), "unexpected: {message}");
+            }
+            other => panic!("expected type error, got: {other:?}"),
+        }
+        Ok::<(), TszError>(())
+    })
+    .expect("ok");
+}
+
+#[test]
 fn build_and_run_const_fold_and_inline() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_io()

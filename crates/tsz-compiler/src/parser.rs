@@ -57,12 +57,6 @@ impl<'a> Parser<'a> {
         while self.peek().kind != TokenKind::RBrace && !self.is_eof() {
             body.push(self.parse_stmt()?);
         }
-        if body.is_empty() {
-            return Err(TszError::Parse {
-                message: "Empty function body (the current minimal subset requires a return)".to_string(),
-                span: self.peek().span,
-            });
-        }
         self.expect(TokenKind::RBrace)?;
 
         let end_span = self.prev_span();
@@ -125,6 +119,11 @@ impl<'a> Parser<'a> {
             TokenKind::KwReturn => self.parse_return_stmt(),
             TokenKind::KwLet => self.parse_let_stmt(),
             TokenKind::KwConst => self.parse_const_stmt(),
+            TokenKind::LBrace => self.parse_block_stmt(),
+            TokenKind::KwIf => self.parse_if_stmt(),
+            TokenKind::KwWhile => self.parse_while_stmt(),
+            TokenKind::KwBreak => self.parse_break_stmt(),
+            TokenKind::KwContinue => self.parse_continue_stmt(),
             TokenKind::Ident => {
                 let is_dot = self.tokens.get(self.idx + 1).map(|t| t.kind) == Some(TokenKind::Dot);
                 if is_dot {
@@ -134,7 +133,9 @@ impl<'a> Parser<'a> {
                 }
             }
             _ => Err(TszError::Parse {
-                message: "Only let/const/<name> = <expr>/console.log(...)/return statements are supported".to_string(),
+                message:
+                    "Only block/if/while/break/continue/let/const/<name> = <expr>/console.log(...)/return statements are supported"
+                        .to_string(),
                 span: self.peek().span,
             }),
         }

@@ -5,6 +5,7 @@ use super::{ast_expr_span, lower_expr_in_function, validate_local_value_type, Lo
 pub(super) fn lower_assign_stmt(
     ctx: &LowerCtx<'_>,
     state: &mut LowerFnState,
+    out: &mut Vec<HirStmt>,
     name: &str,
     name_span: Span,
     expr: &Expr,
@@ -36,11 +37,10 @@ pub(super) fn lower_assign_stmt(
         });
     }
 
-    state.body.push(HirStmt::Assign {
+    out.push(HirStmt::Assign {
         local: local_id,
         value: hir_value,
         span,
     });
     Ok(())
 }
-
