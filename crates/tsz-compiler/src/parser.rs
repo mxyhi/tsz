@@ -5,12 +5,17 @@ use std::path::Path;
 pub fn parse_module(path: &Path, source: &str) -> Result<Module, TszError> {
     let tokens = lexer::lex(source)?;
     let mut p = Parser::new(source, tokens);
+    let mut imports = Vec::new();
     let mut functions = Vec::new();
     while !p.is_eof() {
-        functions.push(p.parse_function()?);
+        match p.peek().kind {
+            TokenKind::KwImport => imports.push(p.parse_import()?),
+            _ => functions.push(p.parse_function()?),
+        }
     }
     Ok(Module {
         path: path.to_path_buf(),
+        imports,
         functions,
     })
 }
@@ -61,6 +66,46 @@ impl<'a> Parser<'a> {
         })
     }
 
+    fn parse_import(&mut self) -> Result<ImportDecl, TszError> {
+        let start = self.expect(TokenKind::KwImport)?.span;
+        self.expect(TokenKind::LBrace)?;
+
+        let mut names = Vec::new();
+        if self.peek().kind == TokenKind::RBrace {
+            return Err(TszError::Parse {
+                message: "import 列表不能为空".to_string(),
+                span: self.peek().span,
+            });
+        }
+        loop {
+            let ident = self.expect(TokenKind::Ident)?;
+            names.push(ImportName {
+                name: self.slice(ident.span).to_string(),
+                span: ident.span,
+            });
+            if self.eat(TokenKind::Comma) {
+                continue;
+            }
+            break;
+        }
+
+        self.expect(TokenKind::RBrace)?;
+        self.expect(TokenKind::KwFrom)?;
+        let from_tok = self.expect(TokenKind::String)?;
+        let from = self.parse_string_value(from_tok)?;
+        let semi = self.expect(TokenKind::Semicolon)?.span;
+
+        Ok(ImportDecl {
+            names,
+            from,
+            resolved_path: None,
+            span: Span {
+                start: start.start,
+                end: semi.end,
+            },
+        })
+    }
+
     fn parse_type(&mut self) -> Result<Type, TszError> {
         let tok = self.expect(TokenKind::Ident)?;
         let s = self.slice(tok.span);
@@ -79,10 +124,21 @@ impl<'a> Parser<'a> {
 
     fn parse_return_stmt(&mut self) -> Result<Stmt, TszError> {
         let start = self.expect(TokenKind::KwReturn)?.span;
+        if self.peek().kind == TokenKind::Semicolon {
+            let semi = self.bump().span;
+            return Ok(Stmt::Return {
+                expr: None,
+                span: Span {
+                    start: start.start,
+                    end: semi.end,
+                },
+            });
+        }
+
         let expr = self.parse_expr()?;
         let semi = self.expect(TokenKind::Semicolon)?.span;
         Ok(Stmt::Return {
-            expr,
+            expr: Some(expr),
             span: Span {
                 start: start.start,
                 end: semi.end,
@@ -125,11 +181,57 @@ impl<'a> Parser<'a> {
                 })?;
                 Ok(Expr::BigInt { value: v, span: tok.span })
             }
+            TokenKind::Ident => {
+                let ident = self.bump();
+                let name = self.slice(ident.span).to_string();
+                if !self.eat(TokenKind::LParen) {
+                    return Err(TszError::Parse {
+                        message: "暂只支持 0 参调用表达式：foo()".to_string(),
+                        span: ident.span,
+                    });
+                }
+                let rparen = self.expect(TokenKind::RParen)?.span;
+                Ok(Expr::Call {
+                    callee: name,
+                    span: Span {
+                        start: ident.span.start,
+                        end: rparen.end,
+                    },
+                })
+            }
             _ => Err(TszError::Parse {
-                message: "暂只支持 number/bigint 字面量表达式".to_string(),
+                message: "暂只支持 number/bigint 字面量或 0 参函数调用".to_string(),
                 span: tok.span,
             }),
         }
+    }
+
+    fn parse_string_value(&self, tok: Token) -> Result<String, TszError> {
+        let raw = self.slice(tok.span);
+        let bytes = raw.as_bytes();
+        if bytes.len() < 2 {
+            return Err(TszError::Parse {
+                message: "无效的字符串字面量".to_string(),
+                span: tok.span,
+            });
+        }
+        let quote = bytes[0];
+        if quote != b'"' && quote != b'\'' {
+            return Err(TszError::Parse {
+                message: "无效的字符串字面量（缺少引号）".to_string(),
+                span: tok.span,
+            });
+        }
+        if bytes[bytes.len() - 1] != quote {
+            return Err(TszError::Parse {
+                message: "无效的字符串字面量（缺少闭合引号）".to_string(),
+                span: tok.span,
+            });
+        }
+        String::from_utf8(bytes[1..bytes.len() - 1].to_vec()).map_err(|_| TszError::Parse {
+            message: "字符串不是有效 UTF-8".to_string(),
+            span: tok.span,
+        })
     }
 
     fn peek(&self) -> Token {
@@ -187,6 +289,7 @@ fn expr_span(expr: &Expr) -> Span {
     match expr {
         Expr::Number { span, .. } | Expr::BigInt { span, .. } => *span,
         Expr::UnaryMinus { span, .. } => *span,
+        Expr::Call { span, .. } => *span,
     }
 }
 
@@ -197,9 +300,35 @@ mod tests {
     #[test]
     fn parse_minimal_main() {
         let src = "export function main(): bigint { return 42n; }";
-        let m = parse_module(Path::new("main.tsz"), src).expect("parse ok");
+        let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+        assert_eq!(m.imports.len(), 0);
         assert_eq!(m.functions.len(), 1);
         assert_eq!(m.functions[0].name, "main");
         assert_eq!(m.functions[0].return_type, Type::BigInt);
+    }
+
+    #[test]
+    fn parse_import_and_call() {
+        let src = r#"
+import { foo, bar } from "./lib.ts";
+export function main(): bigint { return foo(); }
+"#;
+        let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+        assert_eq!(m.imports.len(), 1);
+        assert_eq!(m.imports[0].names.len(), 2);
+        assert_eq!(m.imports[0].names[0].name, "foo");
+        assert_eq!(m.imports[0].names[1].name, "bar");
+        assert_eq!(m.imports[0].from, "./lib.ts");
+        assert_eq!(m.functions.len(), 1);
+    }
+
+    #[test]
+    fn parse_void_return_stmt() {
+        let src = "export function main(): void { return; }";
+        let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+        let Some(Stmt::Return { expr, .. }) = m.functions[0].body.first() else {
+            panic!("expected return stmt");
+        };
+        assert!(expr.is_none());
     }
 }

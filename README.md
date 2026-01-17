@@ -1,3 +1,23 @@
 # TSZ
 
 一个“TypeScript 语法为主、可删减坏特性、追求高性能”的编译型语言与编译器（AOT）。
+
+## 快速开始
+
+```bash
+# 运行示例（返回进程退出码 42）
+cargo run -p tsz-cli -- run examples/exit42.ts
+
+# 运行多文件包示例（目录入口，import + 调用）
+cargo run -p tsz-cli -- run examples/pkg-import
+```
+
+## 规范（当前实现的最小子集）
+
+见 `docs/tsz-spec.md`。
+
+## 支持语法（路线图）
+
+- [ ] let
+- [ ] const
+- [ ] 函数

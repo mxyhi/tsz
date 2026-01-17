@@ -1,14 +1,17 @@
 mod ast;
 mod codegen;
 mod error;
+mod hir;
 mod lexer;
 mod linker;
 mod parser;
+mod resolver;
 mod span;
 mod typecheck;
 
 pub use ast::*;
 pub use error::*;
+pub use hir::*;
 pub use span::*;
 
 use std::path::{Path, PathBuf};
@@ -28,17 +31,9 @@ pub enum OptLevel {
 }
 
 pub async fn build_executable(options: BuildOptions) -> Result<(), TszError> {
-    let source = tokio::fs::read_to_string(&options.entry)
-        .await
-        .map_err(|e| TszError::Io {
-            path: options.entry.clone(),
-            source: e,
-        })?;
-
-    let module = parser::parse_module(&options.entry, &source)?;
-    typecheck::typecheck_entry(&module)?;
-
-    let object_bytes = codegen::emit_object(&module, options.opt_level)?;
+    let program = resolver::load_program(&options.entry).await?;
+    let hir = typecheck::analyze(&program)?;
+    let object_bytes = codegen::emit_object(&hir, options.opt_level)?;
 
     let object_path = default_object_path(&options.output);
     tokio::fs::write(&object_path, object_bytes)
@@ -61,4 +56,3 @@ fn default_object_path(output_exe: &Path) -> PathBuf {
     }
     p
 }
-

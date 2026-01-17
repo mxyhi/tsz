@@ -4,6 +4,8 @@ use crate::{Span, TszError};
 pub enum TokenKind {
     KwExport,
     KwFunction,
+    KwImport,
+    KwFrom,
     KwReturn,
     Ident,
     Number,
@@ -11,6 +13,7 @@ pub enum TokenKind {
     String,
     Colon,
     Semicolon,
+    Comma,
     LParen,
     RParen,
     LBrace,
@@ -121,6 +124,8 @@ impl<'a> Lexer<'a> {
         Ok(match s {
             "export" => TokenKind::KwExport,
             "function" => TokenKind::KwFunction,
+            "import" => TokenKind::KwImport,
+            "from" => TokenKind::KwFrom,
             "return" => TokenKind::KwReturn,
             _ => TokenKind::Ident,
         })
@@ -261,6 +266,7 @@ fn lex_single_char(b: u8) -> Option<TokenKind> {
     Some(match b {
         b':' => TokenKind::Colon,
         b';' => TokenKind::Semicolon,
+        b',' => TokenKind::Comma,
         b'(' => TokenKind::LParen,
         b')' => TokenKind::RParen,
         b'{' => TokenKind::LBrace,

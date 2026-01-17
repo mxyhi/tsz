@@ -1,0 +1,6 @@
+{
+  "name": "tsz-example-pkg-import",
+  "version": "0.0.0",
+  "private": true,
+  "tsz": { "entry": "src/main.ts" }
+}

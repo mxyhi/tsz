@@ -20,5 +20,7 @@ pub enum TszError {
 
     #[error("链接失败: {message}")]
     Link { message: String },
-}
 
+    #[error("模块解析失败: {message}")]
+    Resolve { message: String },
+}
