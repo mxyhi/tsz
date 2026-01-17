@@ -20,4 +20,4 @@ cargo run -p tsz-cli -- run examples/pkg-import
 
 - [ ] let
 - [ ] const
-- [ ] 函数
+- [ ] function
