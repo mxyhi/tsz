@@ -1,4 +1,4 @@
-use crate::{Expr, HirBody, HirExpr, HirFunction, HirProgram, HirReturn, Program, Span, Stmt, TszError, Type};
+use crate::{Expr, HirBody, HirConsoleLog, HirExpr, HirFunction, HirProgram, HirReturn, Program, Span, Stmt, TszError, Type};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -6,7 +6,7 @@ use std::path::PathBuf;
 ///
 /// TSZ v0 约束（当前实现）：
 /// - 仅支持 0 参数函数
-/// - 仅支持 return（可选表达式）作为函数体
+/// - 函数体仅支持若干条 `console.log(...)` + 最后一条 `return`
 /// - 表达式仅支持字面量、负号、0 参调用
 /// - import 仅支持 `import { a, b } from "<specifier>";`
 pub fn analyze(program: &Program) -> Result<HirProgram, TszError> {
@@ -233,12 +233,41 @@ fn build_hir_functions(
             span: info.span,
         })?;
 
-        let ret_stmt = func.body.first().ok_or_else(|| TszError::Type {
-            message: "空函数体（当前最小实现要求必须有 return）".to_string(),
-            span: func.span,
-        })?;
+        match func.return_type {
+            Type::Number | Type::BigInt | Type::Void => {}
+            Type::Bool | Type::String => {
+                return Err(TszError::Type {
+                    message: "当前最小实现只支持 number/bigint/void 作为函数返回类型".to_string(),
+                    span: func.span,
+                });
+            }
+        }
 
-        let Stmt::Return { expr, span } = ret_stmt;
+        let Some(last_stmt) = func.body.last() else {
+            return Err(TszError::Type {
+                message: "空函数体（当前最小实现要求必须有 return）".to_string(),
+                span: func.span,
+            });
+        };
+        let Stmt::Return { expr, span } = last_stmt else {
+            return Err(TszError::Type {
+                message: "函数体最后一条语句必须是 return".to_string(),
+                span: func.span,
+            });
+        };
+
+        let mut logs = Vec::new();
+        for stmt in &func.body[..func.body.len() - 1] {
+            let Stmt::ConsoleLog { args, span } = stmt else {
+                return Err(TszError::Type {
+                    message: "return 必须是函数体最后一条语句".to_string(),
+                    span: stmt_span(stmt),
+                });
+            };
+            let hir_args = lower_console_log_args(info.module_idx, args, scopes, func_infos, *span)?;
+            logs.push(HirConsoleLog { args: hir_args, span: *span });
+        }
+
         let (hir_expr, expr_ty) = match expr {
             None => (None, Type::Void),
             Some(e) => {
@@ -264,6 +293,7 @@ fn build_hir_functions(
             symbol,
             return_type: func.return_type,
             body: HirBody {
+                logs,
                 ret: HirReturn {
                     expr: hir_expr,
                     span: *span,
@@ -290,6 +320,7 @@ fn lower_expr_in_module(
     match expr {
         Expr::Number { value, span } => Ok((HirExpr::Number { value: *value, span: *span }, Type::Number)),
         Expr::BigInt { value, span } => Ok((HirExpr::BigInt { value: *value, span: *span }, Type::BigInt)),
+        Expr::String { value, span } => Ok((HirExpr::String { value: value.clone(), span: *span }, Type::String)),
         Expr::UnaryMinus { expr, span } => {
             let (inner, ty) = lower_expr_in_module(module_idx, expr, scopes, func_infos)?;
             match ty {
@@ -324,6 +355,45 @@ fn lower_expr_in_module(
                 .return_type;
             Ok((HirExpr::Call { callee: callee_id, span: *span }, ret_ty))
         }
+    }
+}
+
+fn lower_console_log_args(
+    module_idx: usize,
+    args: &[Expr],
+    scopes: &[HashMap<String, usize>],
+    func_infos: &[FuncInfo],
+    span: Span,
+) -> Result<Vec<HirExpr>, TszError> {
+    let mut out = Vec::with_capacity(args.len());
+    for arg in args {
+        let (hir, ty) = lower_expr_in_module(module_idx, arg, scopes, func_infos)?;
+        match ty {
+            Type::Number | Type::BigInt => {}
+            Type::String => {
+                if !matches!(arg, Expr::String { .. }) {
+                    return Err(TszError::Type {
+                        message: "当前 string 仅支持字符串字面量".to_string(),
+                        span,
+                    });
+                }
+            }
+            Type::Void | Type::Bool => {
+                return Err(TszError::Type {
+                    message: "console.log 参数只支持 number/bigint/string".to_string(),
+                    span,
+                });
+            }
+        }
+        out.push(hir);
+    }
+    Ok(out)
+}
+
+fn stmt_span(stmt: &Stmt) -> Span {
+    match stmt {
+        Stmt::Return { span, .. } => *span,
+        Stmt::ConsoleLog { span, .. } => *span,
     }
 }
 

@@ -50,7 +50,16 @@ impl<'a> Parser<'a> {
         let return_type = self.parse_type()?;
 
         self.expect(TokenKind::LBrace)?;
-        let body = vec![self.parse_return_stmt()?];
+        let mut body = Vec::new();
+        while self.peek().kind != TokenKind::RBrace && !self.is_eof() {
+            body.push(self.parse_stmt()?);
+        }
+        if body.is_empty() {
+            return Err(TszError::Parse {
+                message: "空函数体（当前最小实现要求必须有 return）".to_string(),
+                span: self.peek().span,
+            });
+        }
         self.expect(TokenKind::RBrace)?;
 
         let end_span = self.prev_span();
@@ -62,6 +71,60 @@ impl<'a> Parser<'a> {
             span: Span {
                 start: start_span.start,
                 end: end_span.end,
+            },
+        })
+    }
+
+    fn parse_stmt(&mut self) -> Result<Stmt, TszError> {
+        match self.peek().kind {
+            TokenKind::KwReturn => self.parse_return_stmt(),
+            TokenKind::Ident => self.parse_console_log_stmt(),
+            _ => Err(TszError::Parse {
+                message: "当前语句只支持 console.log(...) 或 return".to_string(),
+                span: self.peek().span,
+            }),
+        }
+    }
+
+    fn parse_console_log_stmt(&mut self) -> Result<Stmt, TszError> {
+        let start = self.peek().span;
+        let console = self.expect(TokenKind::Ident)?;
+        if self.slice(console.span) != "console" {
+            return Err(TszError::Parse {
+                message: "当前语句只支持 console.log(...)".to_string(),
+                span: console.span,
+            });
+        }
+
+        self.expect(TokenKind::Dot)?;
+
+        let log = self.expect(TokenKind::Ident)?;
+        if self.slice(log.span) != "log" {
+            return Err(TszError::Parse {
+                message: "当前语句只支持 console.log(...)".to_string(),
+                span: log.span,
+            });
+        }
+
+        self.expect(TokenKind::LParen)?;
+        let mut args = Vec::new();
+        if self.peek().kind != TokenKind::RParen {
+            loop {
+                args.push(self.parse_expr()?);
+                if self.eat(TokenKind::Comma) {
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect(TokenKind::RParen)?;
+        let semi = self.expect(TokenKind::Semicolon)?.span;
+
+        Ok(Stmt::ConsoleLog {
+            args,
+            span: Span {
+                start: start.start,
+                end: semi.end,
             },
         })
     }
@@ -181,6 +244,11 @@ impl<'a> Parser<'a> {
                 })?;
                 Ok(Expr::BigInt { value: v, span: tok.span })
             }
+            TokenKind::String => {
+                let tok = self.bump();
+                let v = self.parse_string_value(tok)?;
+                Ok(Expr::String { value: v, span: tok.span })
+            }
             TokenKind::Ident => {
                 let ident = self.bump();
                 let name = self.slice(ident.span).to_string();
@@ -287,7 +355,7 @@ impl<'a> Parser<'a> {
 
 fn expr_span(expr: &Expr) -> Span {
     match expr {
-        Expr::Number { span, .. } | Expr::BigInt { span, .. } => *span,
+        Expr::Number { span, .. } | Expr::BigInt { span, .. } | Expr::String { span, .. } => *span,
         Expr::UnaryMinus { span, .. } => *span,
         Expr::Call { span, .. } => *span,
     }
@@ -330,5 +398,23 @@ export function main(): bigint { return foo(); }
             panic!("expected return stmt");
         };
         assert!(expr.is_none());
+    }
+
+    #[test]
+    fn parse_console_log_stmt() {
+        let src = r#"
+export function main(): void {
+  console.log("hi", 1, 2n);
+  return;
+}
+"#;
+        let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+        assert_eq!(m.functions.len(), 1);
+        assert_eq!(m.functions[0].body.len(), 2);
+
+        let Some(Stmt::ConsoleLog { args, .. }) = m.functions[0].body.first() else {
+            panic!("expected console.log stmt");
+        };
+        assert_eq!(args.len(), 3);
     }
 }

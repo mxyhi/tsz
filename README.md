@@ -10,6 +10,9 @@ cargo run -p tsz-cli -- run examples/exit42.ts
 
 # 运行多文件包示例（目录入口，import + 调用）
 cargo run -p tsz-cli -- run examples/pkg-import
+
+# 标准输出示例（console.log）
+cargo run -p tsz-cli -- run examples/console-log.ts
 ```
 
 ## 规范（当前实现的最小子集）

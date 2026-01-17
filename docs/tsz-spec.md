@@ -92,7 +92,13 @@ export function main(): bigint {
 
 ### 3.2 语句
 
-- 仅支持 `return`：
+- 支持 `console.log`（标准输出）：
+  - `console.log();`
+  - `console.log(<expr>, <expr>, ...);`
+  - 规则：参数之间用空格分隔输出，末尾自动追加换行
+  - 约束：函数体允许写多条 `console.log(...)`，但最后一条语句必须是 `return`
+
+- 支持 `return`：
   - `return <expr>;`
   - `return;`（仅当函数返回类型为 `void`）
 
@@ -100,6 +106,7 @@ export function main(): bigint {
 
 - `number` 字面量（内部为 `f64`）
 - `bigint` 字面量（内部为 **定长** `i64`，例如 `42n`）
+- `string` 字面量（仅用于 `console.log`；不提供通用 string 运行时）
 - 一元负号：`-<expr>`
 - 0 参函数调用：`foo()`
 

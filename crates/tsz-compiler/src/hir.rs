@@ -30,7 +30,14 @@ pub struct HirSourceInfo {
 
 #[derive(Debug, Clone)]
 pub struct HirBody {
+    pub logs: Vec<HirConsoleLog>,
     pub ret: HirReturn,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirConsoleLog {
+    pub args: Vec<HirExpr>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -43,7 +50,7 @@ pub struct HirReturn {
 pub enum HirExpr {
     Number { value: f64, span: Span },
     BigInt { value: i64, span: Span },
+    String { value: String, span: Span },
     UnaryMinus { expr: Box<HirExpr>, span: Span },
     Call { callee: HirFuncId, span: Span },
 }
-

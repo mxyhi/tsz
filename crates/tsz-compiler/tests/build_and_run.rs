@@ -180,3 +180,53 @@ export function fortyTwo(): bigint {
     })
     .expect("ok");
 }
+
+#[test]
+fn build_and_run_console_log_stdout() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("tokio runtime");
+
+    rt.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let entry = dir.path().join("main.ts");
+        write_file(
+            &entry,
+            r#"
+export function main(): bigint {
+  console.log("hi", 1, 2n);
+  console.log();
+  return 0n;
+}
+"#,
+        )
+        .expect("write");
+
+        let out_dir = tempfile::tempdir().map_err(|e| TszError::Io {
+            path: PathBuf::from("<tempdir>"),
+            source: e,
+        })?;
+        let output = out_dir.path().join(exe_name("tsz_test_out"));
+
+        build_executable(BuildOptions {
+            entry,
+            output: output.clone(),
+            opt_level: OptLevel::None,
+        })
+        .await?;
+
+        let out = tokio::process::Command::new(&output)
+            .output()
+            .await
+            .map_err(|e| TszError::Io {
+                path: output.clone(),
+                source: e,
+            })?;
+
+        assert_eq!(out.status.code().unwrap_or(1), 0);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "hi 1 2\n\n");
+        Ok::<(), TszError>(())
+    })
+    .expect("ok");
+}
