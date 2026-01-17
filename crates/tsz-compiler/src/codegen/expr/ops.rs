@@ -383,7 +383,7 @@ fn codegen_logical_short_circuit(
     match op {
         LogicalOp::And => builder.ins().brif(is_true, rhs_block, &[], fast_block, &[]),
         LogicalOp::Or => builder.ins().brif(is_true, fast_block, &[], rhs_block, &[]),
-    }
+    };
     builder.seal_block(fast_block);
     builder.seal_block(rhs_block);
 
