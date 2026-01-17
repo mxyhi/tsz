@@ -1,4 +1,4 @@
-// 多文件示例：包入口（通过 package.json 的 tsz.entry 指定）
+// Multi-file example: package entry (via package.json tsz.entry)
 import { fortyTwo } from "./lib.ts";
 
 export function main(): bigint {
