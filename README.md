@@ -14,6 +14,12 @@ cargo run -p tsz-cli -- run examples/pkg-import
 # 标准输出示例（console.log）
 cargo run -p tsz-cli -- run examples/console-log.ts
 
+# 赋值示例（= 与 += 等语法糖）
+cargo run -p tsz-cli -- run examples/assign.ts
+
+# 控制流示例（block / if / else / while / break / continue）
+cargo run -p tsz-cli -- run examples/control-flow.ts
+
 # const 示例（编译期常量折叠/内联）
 cargo run -p tsz-cli -- run examples/const.ts
 ```
