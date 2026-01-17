@@ -26,6 +26,6 @@ cargo run -p tsz-cli -- run examples/const.ts
 
 - [x] let（函数体内；块级作用域）
 - [x] const
-- [ ] function v1（参数列表 / 多语句 block / 表达式扩展）
+- [x] function v1（参数列表 / 多语句 block / 表达式扩展）
 
 更完整路线图见 [TODO.md](TODO.md)。

@@ -7,9 +7,9 @@ mod lower;
 /// Semantic analysis + minimal type checking, producing HIR for codegen.
 ///
 /// TSZ v0/v0.1 constraints (current implementation):
-/// - Only 0-argument functions
+/// - Functions can have typed parameters (number/bigint); entry `main()` must be 0-arg
 /// - Function bodies support `let`/`const`/`console.log(...)`, and the last statement must be `return`
-/// - Expressions: literals, identifiers (locals), unary minus, 0-arg calls
+/// - Expressions: literals, identifiers (locals/params), unary minus, calls, + - * /, and parentheses
 /// - Imports: only `import { a, b } from "<specifier>";`
 pub fn analyze(program: &Program) -> Result<HirProgram, TszError> {
     let module_index = build_module_index(program)?;
@@ -52,6 +52,7 @@ fn build_module_index(program: &Program) -> Result<HashMap<PathBuf, usize>, TszE
 struct FuncInfo {
     module_idx: usize,
     func_idx: usize,
+    params: Vec<Type>,
     return_type: Type,
     is_export: bool,
     name: String,
@@ -92,6 +93,7 @@ fn index_functions(program: &Program) -> Result<(Vec<FuncInfo>, HashMap<FuncKey,
             infos.push(FuncInfo {
                 module_idx,
                 func_idx,
+                params: f.params.iter().map(|p| p.ty).collect(),
                 return_type: f.return_type,
                 is_export: f.is_export,
                 name: f.name.clone(),
@@ -193,6 +195,13 @@ fn find_entry_main(
             span: Span { start: 0, end: 0 },
         })?;
 
+    if !main.params.is_empty() {
+        return Err(TszError::Type {
+            message: "Entry function main must have 0 parameters".to_string(),
+            span: main.span,
+        });
+    }
+
     let key = FuncKey {
         module_path: entry_module.path.clone(),
         name: main.name.clone(),
@@ -238,13 +247,17 @@ fn build_hir_functions(
             span: info.span,
         })?;
 
+        for p in &func.params {
+            validate_user_fn_param_type(p.ty, p.span)?;
+        }
         validate_user_fn_return_type(func.return_type, func.span)?;
 
         let module_scope = scopes.get(info.module_idx).ok_or_else(|| TszError::Type {
             message: "Module scope index out of bounds (internal error)".to_string(),
             span: func.span,
         })?;
-        let (locals, body) = lower::lower_function_body(info.module_idx, func, module_scope, scopes, func_infos)?;
+        let (params, locals, body) =
+            lower::lower_function_body(info.module_idx, func, module_scope, scopes, func_infos)?;
 
         let symbol = if id == entry_id {
             "__tsz_user_main".to_string()
@@ -255,6 +268,7 @@ fn build_hir_functions(
         out.push(HirFunction {
             symbol,
             return_type: func.return_type,
+            params,
             locals,
             body,
             source: crate::HirSourceInfo {
@@ -267,6 +281,20 @@ fn build_hir_functions(
     }
 
     Ok(out)
+}
+
+fn validate_user_fn_param_type(ty: Type, span: Span) -> Result<(), TszError> {
+    match ty {
+        Type::Number | Type::BigInt => Ok(()),
+        Type::Void => Err(TszError::Type {
+            message: "Parameter type cannot be void".to_string(),
+            span,
+        }),
+        Type::Bool | Type::String => Err(TszError::Type {
+            message: "The current minimal subset only supports number/bigint parameters".to_string(),
+            span,
+        }),
+    }
 }
 
 fn validate_user_fn_return_type(return_type: Type, span: Span) -> Result<(), TszError> {

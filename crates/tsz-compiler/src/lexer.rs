@@ -22,7 +22,10 @@ pub enum TokenKind {
     RParen,
     LBrace,
     RBrace,
+    Plus,
     Minus,
+    Star,
+    Slash,
     Eof,
 }
 
@@ -279,7 +282,10 @@ fn lex_single_char(b: u8) -> Option<TokenKind> {
         b')' => TokenKind::RParen,
         b'{' => TokenKind::LBrace,
         b'}' => TokenKind::RBrace,
+        b'+' => TokenKind::Plus,
         b'-' => TokenKind::Minus,
+        b'*' => TokenKind::Star,
+        b'/' => TokenKind::Slash,
         _ => return None,
     })
 }

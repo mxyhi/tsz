@@ -72,7 +72,7 @@ import { foo, bar } from "./lib.ts";
 
 > TSZ 的 npm 支持边界：仅“依赖解析 + 源码编译”；不实现 Node 的 `exports/conditions` 复杂规则，也不执行 JS。
 
-## 3. 语法子集（v0）
+## 3. 语法子集（v1）
 
 ### 3.1 顶层声明
 
@@ -86,8 +86,8 @@ export function main(): bigint {
 
 约束：
 
-- 仅支持 `function <name>(): <type> { ... }`
-- 仅支持 0 参数
+- 仅支持 `function <name>(a: T, b: U, ...): <type> { ... }`
+  - 形参必须带类型标注；当前仅支持 `number/bigint`
 - `export` 仅用于把函数暴露给其他模块导入
 
 ### 3.2 语句
@@ -117,9 +117,11 @@ export function main(): bigint {
 - `number` 字面量（内部为 `f64`）
 - `bigint` 字面量（内部为 **定长** `i64`，例如 `42n`）
 - `string` 字面量（仅用于 `console.log`；不提供通用 string 运行时）
-- 标识符：局部变量/常量引用（来自 `let/const`；`const` 当前会被编译期内联）
+- 标识符：局部变量/常量/参数引用（来自 `let/const/params`；`const` 当前会被编译期内联）
 - 一元负号：`-<expr>`
-- 0 参函数调用：`foo()`
+- 二元运算：`+ - * /`（仅支持 `number/bigint`，且左右类型必须一致；`* /` 优先级高于 `+ -`）
+- 括号：`(<expr>)`
+- 函数调用：`foo(<expr>, <expr>, ...)`
 
 ## 4. 类型与入口 ABI
 
@@ -138,6 +140,10 @@ export function main(): bigint {
 ```ts
 export function main(): number | bigint | void { ... }
 ```
+
+约束：
+
+- `main` 必须是 **0 参数**（由 C ABI `int main()` 包装调用，不传入参数）
 
 进程退出码映射：
 

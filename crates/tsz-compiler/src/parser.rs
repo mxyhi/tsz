@@ -44,6 +44,7 @@ impl<'a> Parser<'a> {
         let name = self.slice(name_tok.span).to_string();
 
         self.expect(TokenKind::LParen)?;
+        let params = self.parse_param_list()?;
         self.expect(TokenKind::RParen)?;
 
         self.expect(TokenKind::Colon)?;
@@ -66,6 +67,7 @@ impl<'a> Parser<'a> {
         Ok(FunctionDecl {
             is_export,
             name,
+            params,
             return_type,
             body,
             span: Span {
@@ -73,6 +75,47 @@ impl<'a> Parser<'a> {
                 end: end_span.end,
             },
         })
+    }
+
+    fn parse_param_list(&mut self) -> Result<Vec<ParamDecl>, TszError> {
+        let mut params = Vec::new();
+        if self.peek().kind == TokenKind::RParen {
+            return Ok(params);
+        }
+
+        loop {
+            let start = self.peek().span;
+            let name_tok = self.expect(TokenKind::Ident)?;
+            let name_span = name_tok.span;
+            let name = self.slice(name_tok.span).to_string();
+
+            self.expect(TokenKind::Colon)?;
+            let ty = self.parse_type()?;
+            let end = self.prev_span();
+
+            params.push(ParamDecl {
+                name,
+                name_span,
+                ty,
+                span: Span {
+                    start: start.start,
+                    end: end.end,
+                },
+            });
+
+            if self.eat(TokenKind::Comma) {
+                if self.peek().kind == TokenKind::RParen {
+                    return Err(TszError::Parse {
+                        message: "Trailing comma in parameter list is not supported".to_string(),
+                        span: self.peek().span,
+                    });
+                }
+                continue;
+            }
+            break;
+        }
+
+        Ok(params)
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, TszError> {
@@ -268,9 +311,68 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr(&mut self) -> Result<Expr, TszError> {
+        self.parse_additive_expr()
+    }
+
+    // Expression parsing (small TS subset):
+    // - primary: literals / identifiers / calls / parenthesized expressions
+    // - unary: -<expr>
+    // - multiplicative: * /
+    // - additive: + -
+    fn parse_additive_expr(&mut self) -> Result<Expr, TszError> {
+        let mut expr = self.parse_multiplicative_expr()?;
+        loop {
+            let op = match self.peek().kind {
+                TokenKind::Plus => Some(BinaryOp::Add),
+                TokenKind::Minus => Some(BinaryOp::Sub),
+                _ => None,
+            };
+            let Some(op) = op else { break };
+            self.bump(); // operator
+            let rhs = self.parse_multiplicative_expr()?;
+            let span = Span {
+                start: expr_span(&expr).start,
+                end: expr_span(&rhs).end,
+            };
+            expr = Expr::Binary {
+                op,
+                left: Box::new(expr),
+                right: Box::new(rhs),
+                span,
+            };
+        }
+        Ok(expr)
+    }
+
+    fn parse_multiplicative_expr(&mut self) -> Result<Expr, TszError> {
+        let mut expr = self.parse_unary_expr()?;
+        loop {
+            let op = match self.peek().kind {
+                TokenKind::Star => Some(BinaryOp::Mul),
+                TokenKind::Slash => Some(BinaryOp::Div),
+                _ => None,
+            };
+            let Some(op) = op else { break };
+            self.bump(); // operator
+            let rhs = self.parse_unary_expr()?;
+            let span = Span {
+                start: expr_span(&expr).start,
+                end: expr_span(&rhs).end,
+            };
+            expr = Expr::Binary {
+                op,
+                left: Box::new(expr),
+                right: Box::new(rhs),
+                span,
+            };
+        }
+        Ok(expr)
+    }
+
+    fn parse_unary_expr(&mut self) -> Result<Expr, TszError> {
         if self.eat(TokenKind::Minus) {
             let minus_span = self.prev_span();
-            let expr = self.parse_expr()?;
+            let expr = self.parse_unary_expr()?;
             let span = Span {
                 start: minus_span.start,
                 end: expr_span(&expr).end,
@@ -280,7 +382,10 @@ impl<'a> Parser<'a> {
                 span,
             });
         }
+        self.parse_primary_expr()
+    }
 
+    fn parse_primary_expr(&mut self) -> Result<Expr, TszError> {
         let tok = self.peek();
         match tok.kind {
             TokenKind::Number => {
@@ -311,9 +416,26 @@ impl<'a> Parser<'a> {
                 let ident = self.bump();
                 let name = self.slice(ident.span).to_string();
                 if self.eat(TokenKind::LParen) {
+                    let mut args = Vec::new();
+                    if self.peek().kind != TokenKind::RParen {
+                        loop {
+                            args.push(self.parse_expr()?);
+                            if self.eat(TokenKind::Comma) {
+                                if self.peek().kind == TokenKind::RParen {
+                                    return Err(TszError::Parse {
+                                        message: "Trailing comma in call arguments is not supported".to_string(),
+                                        span: self.peek().span,
+                                    });
+                                }
+                                continue;
+                            }
+                            break;
+                        }
+                    }
                     let rparen = self.expect(TokenKind::RParen)?.span;
                     Ok(Expr::Call {
                         callee: name,
+                        args,
                         span: Span {
                             start: ident.span.start,
                             end: rparen.end,
@@ -323,8 +445,14 @@ impl<'a> Parser<'a> {
                     Ok(Expr::Ident { name, span: ident.span })
                 }
             }
+            TokenKind::LParen => {
+                self.bump();
+                let expr = self.parse_expr()?;
+                self.expect(TokenKind::RParen)?;
+                Ok(expr)
+            }
             _ => Err(TszError::Parse {
-                message: "Currently only literals/identifiers/0-arg calls/unary minus are supported".to_string(),
+                message: "Expected expression".to_string(),
                 span: tok.span,
             }),
         }
@@ -415,6 +543,7 @@ fn expr_span(expr: &Expr) -> Span {
         Expr::Ident { span, .. } => *span,
         Expr::UnaryMinus { span, .. } => *span,
         Expr::Call { span, .. } => *span,
+        Expr::Binary { span, .. } => *span,
     }
 }
 
@@ -501,5 +630,64 @@ export function main(): bigint {
         let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
         assert_eq!(m.functions.len(), 1);
         assert_eq!(m.functions[0].body.len(), 3);
+    }
+
+    #[test]
+    fn parse_function_params() {
+        let src = r#"
+export function add(a: bigint, b: bigint): bigint { return a; }
+"#;
+        let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+        assert_eq!(m.functions.len(), 1);
+        let f = &m.functions[0];
+        assert_eq!(f.name, "add");
+        assert_eq!(f.params.len(), 2);
+        assert_eq!(f.params[0].name, "a");
+        assert_eq!(f.params[0].ty, Type::BigInt);
+        assert_eq!(f.params[1].name, "b");
+        assert_eq!(f.params[1].ty, Type::BigInt);
+    }
+
+    #[test]
+    fn parse_call_with_args() {
+        let src = r#"
+function add(a: bigint, b: bigint): bigint { return a; }
+export function main(): bigint { return add(1n, 2n); }
+"#;
+        let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+        let f = &m.functions[1];
+        let Some(Stmt::Return { expr: Some(Expr::Call { callee, args, .. }), .. }) = f.body.first() else {
+            panic!("expected return add(1n, 2n)");
+        };
+        assert_eq!(callee, "add");
+        assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn parse_binary_ops_precedence_and_paren() {
+        let src = r#"
+export function main(): number {
+  return (1 + 2) * 3 + 4 / 2;
+}
+"#;
+        let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+        let f = &m.functions[0];
+        let Some(Stmt::Return { expr: Some(expr), .. }) = f.body.first() else {
+            panic!("expected return");
+        };
+
+        let Expr::Binary { op: BinaryOp::Add, left, right, .. } = expr else {
+            panic!("expected top-level add");
+        };
+
+        // Left: (1 + 2) * 3
+        let Expr::Binary { op: BinaryOp::Mul, left: mul_l, right: mul_r, .. } = left.as_ref() else {
+            panic!("expected mul");
+        };
+        assert!(matches!(mul_r.as_ref(), Expr::Number { value, .. } if *value == 3.0));
+        assert!(matches!(mul_l.as_ref(), Expr::Binary { op: BinaryOp::Add, .. }));
+
+        // Right: 4 / 2
+        assert!(matches!(right.as_ref(), Expr::Binary { op: BinaryOp::Div, .. }));
     }
 }

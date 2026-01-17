@@ -336,6 +336,35 @@ export function main(): bigint {
 }
 
 #[test]
+fn build_and_run_function_params_and_binary_ops() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("tokio runtime");
+
+    rt.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let entry = dir.path().join("main.ts");
+        write_file(
+            &entry,
+            r#"
+function add(a: bigint, b: bigint): bigint {
+  return a + b;
+}
+
+export function main(): bigint {
+  return (add(20n, 1n) + 0n) * 2n;
+}
+"#,
+        )
+        .expect("write");
+
+        build_and_run(entry, 42).await
+    })
+    .expect("ok");
+}
+
+#[test]
 fn type_error_const_initializer_must_be_const() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_io()

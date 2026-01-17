@@ -31,8 +31,17 @@ pub struct ImportName {
 pub struct FunctionDecl {
     pub is_export: bool,
     pub name: String,
+    pub params: Vec<ParamDecl>,
     pub return_type: Type,
     pub body: Vec<Stmt>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParamDecl {
+    pub name: String,
+    pub name_span: Span,
+    pub ty: Type,
     pub span: Span,
 }
 
@@ -66,7 +75,21 @@ pub enum Expr {
     String { value: String, span: Span },
     Ident { name: String, span: Span },
     UnaryMinus { expr: Box<Expr>, span: Span },
-    Call { callee: String, span: Span },
+    Call { callee: String, args: Vec<Expr>, span: Span },
+    Binary {
+        op: BinaryOp,
+        left: Box<Expr>,
+        right: Box<Expr>,
+        span: Span,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

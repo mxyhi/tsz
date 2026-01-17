@@ -2,6 +2,7 @@ use crate::{Span, Type};
 use std::path::PathBuf;
 
 pub type HirFuncId = usize;
+pub type HirParamId = usize;
 pub type HirLocalId = usize;
 
 #[derive(Debug, Clone)]
@@ -16,6 +17,8 @@ pub struct HirFunction {
     pub symbol: String,
     pub return_type: Type,
 
+    /// Function parameters (in declaration order).
+    pub params: Vec<HirParam>,
     /// Function-local variables (in declaration order).
     pub locals: Vec<HirLocal>,
     /// Sequential statements (current constraint: the last statement must be `return`, no control flow).
@@ -27,6 +30,13 @@ pub struct HirFunction {
 
 #[derive(Debug, Clone)]
 pub struct HirLocal {
+    pub name: String,
+    pub ty: Type,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirParam {
     pub name: String,
     pub ty: Type,
     pub span: Span,
@@ -58,7 +68,26 @@ pub enum HirExpr {
     Number { value: f64, span: Span },
     BigInt { value: i64, span: Span },
     String { value: String, span: Span },
+    Param { param: HirParamId, span: Span },
     Local { local: HirLocalId, span: Span },
     UnaryMinus { expr: Box<HirExpr>, span: Span },
-    Call { callee: HirFuncId, span: Span },
+    Call {
+        callee: HirFuncId,
+        args: Vec<HirExpr>,
+        span: Span,
+    },
+    Binary {
+        op: HirBinaryOp,
+        left: Box<HirExpr>,
+        right: Box<HirExpr>,
+        span: Span,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirBinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
 }

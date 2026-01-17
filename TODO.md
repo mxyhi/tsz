@@ -13,8 +13,8 @@
   - [x] 语义：编译期常量折叠/内联（字面量与一元负号；允许引用其他 `const`）
   - [x] 测试：编译期报错（非 const expr）+ build/run（读 const）
 
-- [ ] function
+- [x] function
   - [x] v0：0 参数 + 单 `return`（当前已实现）
-  - [ ] v1：参数列表（`function f(a: T, b: U): R { ... }`）
-  - [ ] v1：多语句 block（通常需要 `let/const` 先落地）
-  - [ ] v1：表达式扩展（标识符、二元运算、括号、调用带参数）
+  - [x] v1：参数列表（`function f(a: T, b: U): R { ... }`）
+  - [x] v1：多语句 block（通常需要 `let/const` 先落地）
+  - [x] v1：表达式扩展（标识符、二元运算、括号、调用带参数）

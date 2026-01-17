@@ -1,5 +1,8 @@
 use super::FuncInfo;
-use crate::{Expr, HirExpr, HirLocal, HirLocalId, HirStmt, Span, Stmt, TszError, Type};
+use crate::{
+    BinaryOp, Expr, HirBinaryOp, HirExpr, HirLocal, HirLocalId, HirParam, HirParamId, HirStmt, Span, Stmt, TszError,
+    Type,
+};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy)]
@@ -10,7 +13,8 @@ enum ConstValue {
 
 #[derive(Debug, Clone, Copy)]
 enum LocalValue {
-    Runtime(HirLocalId),
+    Param(HirParamId),
+    Local(HirLocalId),
     Const(ConstValue),
 }
 
@@ -41,7 +45,7 @@ impl LocalScopes {
         let current = self.stack.last_mut().expect("at least one scope");
         if current.contains_key(&name) {
             return Err(TszError::Type {
-                message: format!("Duplicate local variable declaration: {name}"),
+                message: format!("Duplicate local binding declaration: {name}"),
                 span: name_span,
             });
         }
@@ -58,14 +62,16 @@ struct LowerCtx<'a> {
 }
 
 struct LowerFnState {
+    params: Vec<HirParam>,
     locals: Vec<HirLocal>,
     local_scopes: LocalScopes,
     body: Vec<HirStmt>,
 }
 
 impl LowerFnState {
-    fn new(stmt_count: usize) -> Self {
+    fn new(param_count: usize, stmt_count: usize) -> Self {
         Self {
+            params: Vec::with_capacity(param_count),
             locals: Vec::new(),
             local_scopes: LocalScopes::new(),
             body: Vec::with_capacity(stmt_count),
@@ -79,13 +85,8 @@ pub(super) fn lower_function_body(
     module_scope: &HashMap<String, usize>,
     scopes: &[HashMap<String, usize>],
     func_infos: &[FuncInfo],
-) -> Result<(Vec<HirLocal>, Vec<HirStmt>), TszError> {
-    if func.body.is_empty() {
-        return Err(TszError::Type {
-            message: "Empty function body (the current minimal subset requires a return)".to_string(),
-            span: func.span,
-        });
-    }
+) -> Result<(Vec<HirParam>, Vec<HirLocal>, Vec<HirStmt>), TszError> {
+    ensure_non_empty_body(func)?;
 
     let ctx = LowerCtx {
         module_idx,
@@ -93,10 +94,58 @@ pub(super) fn lower_function_body(
         scopes,
         func_infos,
     };
-    let mut state = LowerFnState::new(func.body.len());
+    let mut state = LowerFnState::new(func.params.len(), func.body.len());
+
+    lower_params(&ctx, &mut state, &func.params)?;
 
     let (last, prefix) = func.body.split_last().expect("checked non-empty");
-    for stmt in prefix {
+    lower_stmt_prefix(&ctx, &mut state, prefix)?;
+    lower_last_stmt(&ctx, &mut state, func.return_type, last)?;
+
+    Ok((state.params, state.locals, state.body))
+}
+
+fn ensure_non_empty_body(func: &crate::FunctionDecl) -> Result<(), TszError> {
+    if func.body.is_empty() {
+        return Err(TszError::Type {
+            message: "Empty function body (the current minimal subset requires a return)".to_string(),
+            span: func.span,
+        });
+    }
+    Ok(())
+}
+
+fn lower_params(ctx: &LowerCtx<'_>, state: &mut LowerFnState, params: &[crate::ParamDecl]) -> Result<(), TszError> {
+    for p in params {
+        // Keep `foo` vs `foo()` unambiguous: parameters cannot shadow module-level symbols.
+        if ctx.module_scope.contains_key(&p.name) {
+            return Err(TszError::Type {
+                message: format!("Parameter name conflicts with a function/import: {}", p.name),
+                span: p.name_span,
+            });
+        }
+
+        let param_id = state.params.len();
+        state.params.push(HirParam {
+            name: p.name.clone(),
+            ty: p.ty,
+            span: p.span,
+        });
+
+        state.local_scopes.insert_current(
+            p.name.clone(),
+            LocalInfo {
+                value: LocalValue::Param(param_id),
+                ty: p.ty,
+            },
+            p.name_span,
+        )?;
+    }
+    Ok(())
+}
+
+fn lower_stmt_prefix(ctx: &LowerCtx<'_>, state: &mut LowerFnState, stmts: &[Stmt]) -> Result<(), TszError> {
+    for stmt in stmts {
         match stmt {
             Stmt::Let {
                 name,
@@ -104,15 +153,15 @@ pub(super) fn lower_function_body(
                 annotated_type,
                 expr,
                 span,
-            } => lower_let_stmt(&ctx, &mut state, name, *name_span, *annotated_type, expr, *span)?,
+            } => lower_let_stmt(ctx, state, name, *name_span, *annotated_type, expr, *span)?,
             Stmt::Const {
                 name,
                 name_span,
                 annotated_type,
                 expr,
                 span,
-            } => lower_const_stmt(&ctx, &mut state, name, *name_span, *annotated_type, expr, *span)?,
-            Stmt::ConsoleLog { args, span } => lower_console_log_stmt(&ctx, &mut state, args, *span)?,
+            } => lower_const_stmt(ctx, state, name, *name_span, *annotated_type, expr, *span)?,
+            Stmt::ConsoleLog { args, span } => lower_console_log_stmt(ctx, state, args, *span)?,
             Stmt::Return { span, .. } => {
                 return Err(TszError::Type {
                     message: "return must be the last statement in the function body".to_string(),
@@ -121,18 +170,22 @@ pub(super) fn lower_function_body(
             }
         }
     }
+    Ok(())
+}
 
+fn lower_last_stmt(
+    ctx: &LowerCtx<'_>,
+    state: &mut LowerFnState,
+    return_type: Type,
+    last: &Stmt,
+) -> Result<(), TszError> {
     match last {
-        Stmt::Return { expr, span } => lower_return_stmt(&ctx, &mut state, func.return_type, expr, *span)?,
-        Stmt::Let { span, .. } | Stmt::Const { span, .. } | Stmt::ConsoleLog { span, .. } => {
-            return Err(TszError::Type {
-                message: "The last statement in the function body must be return".to_string(),
-                span: *span,
-            });
-        }
+        Stmt::Return { expr, span } => lower_return_stmt(ctx, state, return_type, expr, *span),
+        Stmt::Let { span, .. } | Stmt::Const { span, .. } | Stmt::ConsoleLog { span, .. } => Err(TszError::Type {
+            message: "The last statement in the function body must be return".to_string(),
+            span: *span,
+        }),
     }
-
-    Ok((state.locals, state.body))
 }
 
 fn lower_let_stmt(
@@ -177,7 +230,7 @@ fn lower_let_stmt(
     state.local_scopes.insert_current(
         name.to_string(),
         LocalInfo {
-            value: LocalValue::Runtime(local_id),
+            value: LocalValue::Local(local_id),
             ty: declared_ty,
         },
         name_span,
@@ -257,7 +310,11 @@ fn try_eval_const_value(expr: &HirExpr) -> Option<ConstValue> {
             ConstValue::Number(v) => Some(ConstValue::Number(-v)),
             ConstValue::BigInt(v) => Some(ConstValue::BigInt(v.checked_neg()?)),
         },
-        HirExpr::String { .. } | HirExpr::Local { .. } | HirExpr::Call { .. } => None,
+        HirExpr::String { .. }
+        | HirExpr::Param { .. }
+        | HirExpr::Local { .. }
+        | HirExpr::Call { .. }
+        | HirExpr::Binary { .. } => None,
     }
 }
 
@@ -359,7 +416,8 @@ fn lower_expr_in_function(
                 });
             };
             match info.value {
-                LocalValue::Runtime(id) => Ok((HirExpr::Local { local: id, span: *span }, info.ty)),
+                LocalValue::Param(id) => Ok((HirExpr::Param { param: id, span: *span }, info.ty)),
+                LocalValue::Local(id) => Ok((HirExpr::Local { local: id, span: *span }, info.ty)),
                 LocalValue::Const(v) => match v {
                     ConstValue::Number(value) => Ok((HirExpr::Number { value, span: *span }, Type::Number)),
                     ConstValue::BigInt(value) => Ok((HirExpr::BigInt { value, span: *span }, Type::BigInt)),
@@ -382,7 +440,7 @@ fn lower_expr_in_function(
                 }),
             }
         }
-        Expr::Call { callee, span } => {
+        Expr::Call { callee, args, span } => {
             let scope = scopes.get(module_idx).ok_or_else(|| TszError::Type {
                 message: "Module scope index out of bounds (internal error)".to_string(),
                 span: *span,
@@ -391,14 +449,86 @@ fn lower_expr_in_function(
                 message: format!("Undefined function: {callee}"),
                 span: *span,
             })?;
-            let ret_ty = func_infos
+            let callee_info = func_infos
                 .get(callee_id)
                 .ok_or_else(|| TszError::Type {
                     message: "Function index out of bounds (internal error)".to_string(),
                     span: *span,
-                })?
-                .return_type;
-            Ok((HirExpr::Call { callee: callee_id, span: *span }, ret_ty))
+                })?;
+
+            if args.len() != callee_info.params.len() {
+                return Err(TszError::Type {
+                    message: format!(
+                        "Argument count mismatch for {callee}: expected {}, got {}",
+                        callee_info.params.len(),
+                        args.len()
+                    ),
+                    span: *span,
+                });
+            }
+
+            let mut hir_args = Vec::with_capacity(args.len());
+            for (idx, arg) in args.iter().enumerate() {
+                let (hir, ty) = lower_expr_in_function(module_idx, arg, scopes, func_infos, locals)?;
+                let expected = callee_info.params[idx];
+                if ty != expected {
+                    return Err(TszError::Type {
+                        message: format!(
+                            "Argument type mismatch for {callee} (arg {idx}): expected {:?}, got {:?}",
+                            expected, ty
+                        ),
+                        span: ast_expr_span(arg),
+                    });
+                }
+                hir_args.push(hir);
+            }
+
+            Ok((
+                HirExpr::Call {
+                    callee: callee_id,
+                    args: hir_args,
+                    span: *span,
+                },
+                callee_info.return_type,
+            ))
+        }
+        Expr::Binary { op, left, right, span } => {
+            let (hir_left, left_ty) = lower_expr_in_function(module_idx, left, scopes, func_infos, locals)?;
+            let (hir_right, right_ty) = lower_expr_in_function(module_idx, right, scopes, func_infos, locals)?;
+            if left_ty != right_ty {
+                return Err(TszError::Type {
+                    message: format!(
+                        "Binary operator type mismatch: left is {:?}, right is {:?}",
+                        left_ty, right_ty
+                    ),
+                    span: *span,
+                });
+            }
+            match left_ty {
+                Type::Number | Type::BigInt => {}
+                Type::Void | Type::Bool | Type::String => {
+                    return Err(TszError::Type {
+                        message: "Binary operators only support number/bigint".to_string(),
+                        span: *span,
+                    });
+                }
+            }
+
+            let hir_op = match op {
+                BinaryOp::Add => HirBinaryOp::Add,
+                BinaryOp::Sub => HirBinaryOp::Sub,
+                BinaryOp::Mul => HirBinaryOp::Mul,
+                BinaryOp::Div => HirBinaryOp::Div,
+            };
+            Ok((
+                HirExpr::Binary {
+                    op: hir_op,
+                    left: Box::new(hir_left),
+                    right: Box::new(hir_right),
+                    span: *span,
+                },
+                left_ty,
+            ))
         }
     }
 }
@@ -444,7 +574,7 @@ fn ast_expr_span(expr: &Expr) -> Span {
         | Expr::String { span, .. }
         | Expr::Ident { span, .. }
         | Expr::UnaryMinus { span, .. }
-        | Expr::Call { span, .. } => *span,
+        | Expr::Call { span, .. }
+        | Expr::Binary { span, .. } => *span,
     }
 }
-
