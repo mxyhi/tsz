@@ -1,0 +1,15 @@
+[package]
+name = "tsz-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+clap = { version = "4.5.27", features = ["derive"] }
+tempfile = "3.15.0"
+tokio = { version = "1.43.0", features = ["fs", "macros", "process", "rt-multi-thread", "time"] }
+tsz-compiler = { path = "../tsz-compiler" }
+
+[[bin]]
+name = "tsz"
+path = "src/main.rs"
