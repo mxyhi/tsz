@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use tsz_compiler::{build_executable, BuildOptions, OptLevel, TszError};
+use tsz_compiler::{BuildOptions, OptLevel, TszError, build_executable};
 
 fn exe_name(stem: &str) -> String {
     if cfg!(windows) {
@@ -168,6 +168,120 @@ export function main(): bigint {
         .expect("write");
         write_file(
             &dep.join("src/dep.ts"),
+            r#"
+export function fortyTwo(): bigint {
+  return 42n;
+}
+"#,
+        )
+        .expect("write");
+
+        build_and_run(app, 42).await
+    })
+    .expect("ok");
+}
+
+#[test]
+fn build_and_run_node_modules_package_subpath_import() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("tokio runtime");
+
+    rt.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app = dir.path().join("app");
+        write_file(
+            &app.join("package.json"),
+            r#"{ "name": "app", "version": "0.0.0", "tsz": { "entry": "src/main.ts" } }"#,
+        )
+        .expect("write");
+        write_file(
+            &app.join("src/main.ts"),
+            r#"
+import { fortyTwo } from "dep/subpath";
+export function main(): bigint {
+  return fortyTwo();
+}
+"#,
+        )
+        .expect("write");
+
+        // node_modules/dep
+        let dep = app.join("node_modules/dep");
+        write_file(
+            &dep.join("package.json"),
+            r#"{ "name": "dep", "version": "0.0.0", "tsz": { "entry": "src/dep.ts" } }"#,
+        )
+        .expect("write");
+        write_file(
+            &dep.join("src/dep.ts"),
+            r#"
+export function unused(): bigint {
+  return 0n;
+}
+"#,
+        )
+        .expect("write");
+        write_file(
+            &dep.join("subpath.ts"),
+            r#"
+export function fortyTwo(): bigint {
+  return 42n;
+}
+"#,
+        )
+        .expect("write");
+
+        build_and_run(app, 42).await
+    })
+    .expect("ok");
+}
+
+#[test]
+fn build_and_run_node_modules_scoped_package_subpath_import() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("tokio runtime");
+
+    rt.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app = dir.path().join("app");
+        write_file(
+            &app.join("package.json"),
+            r#"{ "name": "app", "version": "0.0.0", "tsz": { "entry": "src/main.ts" } }"#,
+        )
+        .expect("write");
+        write_file(
+            &app.join("src/main.ts"),
+            r#"
+import { fortyTwo } from "@scope/dep/subpath";
+export function main(): bigint {
+  return fortyTwo();
+}
+"#,
+        )
+        .expect("write");
+
+        // node_modules/@scope/dep
+        let dep = app.join("node_modules/@scope/dep");
+        write_file(
+            &dep.join("package.json"),
+            r#"{ "name": "@scope/dep", "version": "0.0.0", "tsz": { "entry": "src/dep.ts" } }"#,
+        )
+        .expect("write");
+        write_file(
+            &dep.join("src/dep.ts"),
+            r#"
+export function unused(): bigint {
+  return 0n;
+}
+"#,
+        )
+        .expect("write");
+        write_file(
+            &dep.join("subpath.ts"),
             r#"
 export function fortyTwo(): bigint {
   return 42n;

@@ -1,4 +1,4 @@
-use crate::{parser, Program, TszError};
+use crate::{Program, TszError, parser};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -114,10 +114,12 @@ impl ModuleLoader {
 }
 
 async fn parse_module_file(path: &Path) -> Result<crate::Module, TszError> {
-    let source = tokio::fs::read_to_string(path).await.map_err(|e| TszError::Io {
-        path: path.to_path_buf(),
-        source: e,
-    })?;
+    let source = tokio::fs::read_to_string(path)
+        .await
+        .map_err(|e| TszError::Io {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
     parser::parse_module(path, &source)
 }
 
@@ -161,7 +163,10 @@ async fn resolve_entry_path(entry: &Path) -> Result<PathBuf, TszError> {
     }
 }
 
-async fn resolve_import_specifier(current_file: &Path, specifier: &str) -> Result<PathBuf, TszError> {
+async fn resolve_import_specifier(
+    current_file: &Path,
+    specifier: &str,
+) -> Result<PathBuf, TszError> {
     let current_dir = current_file.parent().ok_or_else(|| TszError::Resolve {
         message: format!("Failed to get current module directory: {current_file:?}"),
     })?;
@@ -179,13 +184,195 @@ fn is_relative_specifier(specifier: &str) -> bool {
 
 async fn resolve_relative_specifier(base_dir: &Path, specifier: &str) -> Result<PathBuf, TszError> {
     let raw = base_dir.join(specifier);
+    resolve_path_like(&raw).await
+}
 
-    if let Some(meta) = metadata_optional(&raw).await? {
+async fn resolve_package_specifier(base_dir: &Path, specifier: &str) -> Result<PathBuf, TszError> {
+    let pkg = parse_package_specifier(specifier)?;
+
+    let mut dir = base_dir.to_path_buf();
+    loop {
+        let mut candidate = dir.join("node_modules");
+        for part in &pkg.pkg_parts {
+            candidate = candidate.join(part);
+        }
+
+        if let Some(meta) = metadata_optional(&candidate).await? {
+            if meta.is_dir() {
+                if pkg.subpath_parts.is_empty() {
+                    return resolve_package_entry(&candidate).await;
+                }
+
+                // Require every node_modules import to point to a valid TSZ package (package.json + tsz.entry),
+                // even if the import uses a subpath. This keeps rules simple and consistent.
+                let _entry = resolve_package_entry(&candidate).await?;
+
+                return resolve_package_subpath(&candidate, &pkg.subpath_parts).await;
+            }
+        }
+
+        let Some(parent) = dir.parent() else { break };
+        dir = parent.to_path_buf();
+    }
+
+    Err(TszError::Resolve {
+        message: format!("Package not found in node_modules: {specifier}"),
+    })
+}
+
+#[derive(Debug)]
+struct PackageSpecifier<'a> {
+    pkg_parts: Vec<&'a str>,
+    subpath_parts: Vec<&'a str>,
+}
+
+fn parse_package_specifier(specifier: &str) -> Result<PackageSpecifier<'_>, TszError> {
+    if specifier.is_empty() {
+        return Err(TszError::Resolve {
+            message: "Package specifier cannot be empty".to_string(),
+        });
+    }
+
+    // Keep rules minimal/predictable:
+    // - <pkg> or @scope/<pkg> is the package root name
+    // - optional "/<subpath...>" is resolved as a path under the package root directory
+    let mut parts = specifier.split('/');
+    let first = parts.next().unwrap_or_default();
+    if first.is_empty() {
+        return Err(TszError::Resolve {
+            message: format!("Invalid package specifier: {specifier}"),
+        });
+    }
+
+    if first.starts_with('@') {
+        if first.len() == 1 {
+            return Err(TszError::Resolve {
+                message: format!("Invalid scoped package name: {specifier} (expected @scope/name)"),
+            });
+        }
+
+        let scope = first;
+        let Some(name) = parts.next() else {
+            return Err(TszError::Resolve {
+                message: format!("Invalid scoped package name: {specifier} (expected @scope/name)"),
+            });
+        };
+        if name.is_empty() {
+            return Err(TszError::Resolve {
+                message: format!("Invalid scoped package name: {specifier} (expected @scope/name)"),
+            });
+        }
+        validate_package_name_parts(specifier, &[scope, name])?;
+
+        let subpath_parts: Vec<&str> = parts.collect();
+        validate_package_subpath_parts(specifier, &subpath_parts)?;
+
+        Ok(PackageSpecifier {
+            pkg_parts: vec![scope, name],
+            subpath_parts,
+        })
+    } else {
+        let name = first;
+        validate_package_name_parts(specifier, &[name])?;
+        let subpath_parts: Vec<&str> = parts.collect();
+        validate_package_subpath_parts(specifier, &subpath_parts)?;
+
+        Ok(PackageSpecifier {
+            pkg_parts: vec![name],
+            subpath_parts,
+        })
+    }
+}
+
+fn validate_package_name_parts(specifier: &str, parts: &[&str]) -> Result<(), TszError> {
+    for part in parts {
+        if part.is_empty() {
+            return Err(TszError::Resolve {
+                message: format!("Invalid package name: {specifier}"),
+            });
+        }
+        if *part == "." || *part == ".." {
+            return Err(TszError::Resolve {
+                message: format!("Invalid package name: {specifier}"),
+            });
+        }
+        if part.contains('\\') {
+            return Err(TszError::Resolve {
+                message: format!("Invalid package name: {specifier} (\"\\\\\" is not allowed)"),
+            });
+        }
+        // Reject Windows path prefixes / absolute paths (e.g. "C:" / "\\\\server\\share") to avoid escaping node_modules.
+        let mut comps = Path::new(part).components();
+        match (comps.next(), comps.next()) {
+            (Some(std::path::Component::Normal(_)), None) => {}
+            _ => {
+                return Err(TszError::Resolve {
+                    message: format!("Invalid package name: {specifier}"),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_package_subpath_parts(specifier: &str, parts: &[&str]) -> Result<(), TszError> {
+    for part in parts {
+        if part.is_empty() {
+            return Err(TszError::Resolve {
+                message: format!("Invalid package subpath import: {specifier} (empty segment)"),
+            });
+        }
+        if *part == "." || *part == ".." {
+            return Err(TszError::Resolve {
+                message: format!(
+                    "Invalid package subpath import: {specifier} (dot segments are not allowed)"
+                ),
+            });
+        }
+
+        // Keep specifiers consistent and avoid platform-specific path separators / prefixes.
+        if part.contains('\\') {
+            return Err(TszError::Resolve {
+                message: format!(
+                    "Invalid package subpath import: {specifier} (\"\\\\\" is not allowed)"
+                ),
+            });
+        }
+
+        // On Windows, a segment like "C:" is treated as a path prefix and would escape the package root.
+        let mut comps = Path::new(part).components();
+        match (comps.next(), comps.next()) {
+            (Some(std::path::Component::Normal(_)), None) => {}
+            _ => {
+                return Err(TszError::Resolve {
+                    message: format!(
+                        "Invalid package subpath import: {specifier} (invalid segment: {part})"
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn resolve_package_subpath(
+    package_dir: &Path,
+    subpath_parts: &[&str],
+) -> Result<PathBuf, TszError> {
+    let mut raw = package_dir.to_path_buf();
+    for part in subpath_parts {
+        raw = raw.join(part);
+    }
+    resolve_path_like(&raw).await
+}
+
+async fn resolve_path_like(raw: &Path) -> Result<PathBuf, TszError> {
+    if let Some(meta) = metadata_optional(raw).await? {
         if meta.is_file() {
-            return Ok(raw);
+            return Ok(raw.to_path_buf());
         }
         if meta.is_dir() {
-            return resolve_package_entry(&raw).await;
+            return resolve_package_entry(raw).await;
         }
         return Err(TszError::Resolve {
             message: format!("Invalid import path (neither file nor directory): {raw:?}"),
@@ -201,71 +388,21 @@ async fn resolve_relative_specifier(base_dir: &Path, specifier: &str) -> Result<
     // Allow omitting the extension: prefer `.ts`, then try legacy `.tsz`.
     for ext in [DEFAULT_SOURCE_EXT, LEGACY_SOURCE_EXT] {
         let candidate = raw.with_extension(ext);
-        if metadata_optional(&candidate).await?.is_some() {
-            return Ok(candidate);
-        }
-    }
-
-    Err(TszError::Resolve {
-        message: format!("Imported module does not exist: {raw:?} (extension completion also failed)"),
-    })
-}
-
-async fn resolve_package_specifier(base_dir: &Path, specifier: &str) -> Result<PathBuf, TszError> {
-    let pkg_parts = parse_pkg_root_parts(specifier)?;
-
-    let mut dir = base_dir.to_path_buf();
-    loop {
-        let mut candidate = dir.join("node_modules");
-        for part in &pkg_parts {
-            candidate = candidate.join(part);
-        }
-
         if let Some(meta) = metadata_optional(&candidate).await? {
+            if meta.is_file() {
+                return Ok(candidate);
+            }
             if meta.is_dir() {
                 return resolve_package_entry(&candidate).await;
             }
         }
-
-        let Some(parent) = dir.parent() else { break };
-        dir = parent.to_path_buf();
     }
 
     Err(TszError::Resolve {
-        message: format!("Package not found in node_modules: {specifier}"),
+        message: format!(
+            "Imported module does not exist: {raw:?} (extension completion also failed)"
+        ),
     })
-}
-
-fn parse_pkg_root_parts(specifier: &str) -> Result<Vec<&str>, TszError> {
-    if specifier.is_empty() {
-        return Err(TszError::Resolve {
-            message: "Package name cannot be empty".to_string(),
-        });
-    }
-
-    let mut parts = specifier.split('/');
-    let first = parts.next().unwrap_or_default();
-    if first.starts_with('@') {
-        let scope = first;
-        let Some(name) = parts.next() else {
-            return Err(TszError::Resolve {
-                message: format!("Invalid scoped package name: {specifier} (expected @scope/name)"),
-            });
-        };
-        if parts.next().is_some() {
-            return Err(TszError::Resolve {
-                message: format!("Package subpath imports are not supported yet: {specifier} (only package root)"),
-            });
-        }
-        Ok(vec![scope, name])
-    } else {
-        if parts.next().is_some() {
-            return Err(TszError::Resolve {
-                message: format!("Package subpath imports are not supported yet: {specifier} (only package root)"),
-            });
-        }
-        Ok(vec![first])
-    }
 }
 
 async fn resolve_package_entry(package_dir: &Path) -> Result<PathBuf, TszError> {
@@ -325,10 +462,12 @@ struct TszConfig {
 }
 
 async fn canonicalize(path: &Path) -> Result<PathBuf, TszError> {
-    tokio::fs::canonicalize(path).await.map_err(|e| TszError::Io {
-        path: path.to_path_buf(),
-        source: e,
-    })
+    tokio::fs::canonicalize(path)
+        .await
+        .map_err(|e| TszError::Io {
+            path: path.to_path_buf(),
+            source: e,
+        })
 }
 
 async fn metadata_optional(path: &Path) -> Result<Option<std::fs::Metadata>, TszError> {

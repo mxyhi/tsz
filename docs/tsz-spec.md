@@ -52,7 +52,9 @@ import { foo, bar } from "./lib.ts";
 - 不支持 default import、`import * as ns`、`as` 重命名、动态 import
 - `<specifier>` 只能是：
   - **相对路径**：以 `./` 或 `../` 开头
-  - **包名**：例如 `"left-pad"` / `"@scope/pkg"`
+  - **包名/包子路径**（node_modules）：例如：
+    - 包根：`"left-pad"` / `"@scope/pkg"`
+    - 包子路径：`"left-pad/subpath"` / `"@scope/pkg/subpath"`
 
 ### 2.2 解析规则（简化版 Node 风格）
 
@@ -63,11 +65,23 @@ import { foo, bar } from "./lib.ts";
 - 若 `<specifier>` 省略扩展名，则自动补全为 `.ts`（再尝试 `.tsz`）
 - 解析得到的路径为目录时：视为“包根目录”，走 `package.json` 的 `tsz.entry`
 
-#### 包名（node_modules）
+#### 包名/包子路径（node_modules）
 
 从 `current_dir` 开始，向上逐级寻找 `node_modules/<pkg>` 目录：
 
-- 找到后，将该目录视为“包根目录”，读取其 `package.json` 的 `tsz.entry`
+- 找到后，将该目录视为“包根目录”，读取其 `package.json` 的 `tsz.entry`（用于校验 TSZ 包配置）
+
+然后：
+
+- 若 `<specifier>` 是 **包根**：解析为 `tsz.entry`
+- 若 `<specifier>` 带 **子路径**：将子路径当作“包根目录下的路径”，按“相对路径”规则继续解析
+  - 省略扩展名：补全 `.ts`（再尝试 `.tsz`）
+  - 命中目录：视为“包根目录”，读取该目录 `package.json` 的 `tsz.entry`
+
+子路径约束：
+
+- 不允许空段、`.`、`..`
+- 不允许使用 `\\`
 - 未找到则报错
 
 > TSZ 的 npm 支持边界：仅“依赖解析 + 源码编译”；不实现 Node 的 `exports/conditions` 复杂规则，也不执行 JS。

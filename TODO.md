@@ -10,7 +10,7 @@
   - [x] 解析：相对路径（支持省略扩展名，补全 `.ts` / `.tsz`）
   - [x] 解析：目录入口（读取 `package.json` 的 `tsz.entry`）
   - [x] 解析：`node_modules` 包导入（仅包根；暂不支持 subpath import）
-  - [ ] 解析：package subpath import（例如 `import { x } from "dep/subpath"`）
+  - [x] 解析：package subpath import（例如 `import { x } from "dep/subpath"`）
 
 - [x] console.log
   - [x] 语法：`console.log();` / `console.log(<expr>, <expr>, ...);`
