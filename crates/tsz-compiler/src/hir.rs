@@ -58,6 +58,12 @@ pub enum HirStmt {
         init: HirExpr,
         span: Span,
     },
+    /// Local variable assignment: `<name> = <expr>;`
+    Assign {
+        local: HirLocalId,
+        value: HirExpr,
+        span: Span,
+    },
     /// Stdout: `console.log(a, b, c);`
     ConsoleLog { args: Vec<HirExpr>, span: Span },
     Return { expr: Option<HirExpr>, span: Span },

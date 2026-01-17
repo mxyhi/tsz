@@ -15,6 +15,10 @@ pub enum TokenKind {
     String,
     Colon,
     Equal,
+    PlusEqual,
+    MinusEqual,
+    StarEqual,
+    SlashEqual,
     Semicolon,
     Comma,
     Dot,
@@ -88,6 +92,47 @@ impl<'a> Lexer<'a> {
     }
 
     fn lex_token_kind(&mut self, start: usize, b: u8) -> Result<TokenKind, TszError> {
+        // 2-char operators must be handled before `lex_single_char`.
+        match b {
+            b'+' => {
+                if self.peek_byte_at(self.pos + 1) == Some(b'=') {
+                    self.pos += 2;
+                    return Ok(TokenKind::PlusEqual);
+                }
+                self.pos += 1;
+                return Ok(TokenKind::Plus);
+            }
+            b'-' => {
+                if self.peek_byte_at(self.pos + 1) == Some(b'=') {
+                    self.pos += 2;
+                    return Ok(TokenKind::MinusEqual);
+                }
+                self.pos += 1;
+                return Ok(TokenKind::Minus);
+            }
+            b'*' => {
+                if self.peek_byte_at(self.pos + 1) == Some(b'=') {
+                    self.pos += 2;
+                    return Ok(TokenKind::StarEqual);
+                }
+                self.pos += 1;
+                return Ok(TokenKind::Star);
+            }
+            b'/' => {
+                if self.peek_byte_at(self.pos + 1) == Some(b'=') {
+                    self.pos += 2;
+                    return Ok(TokenKind::SlashEqual);
+                }
+                self.pos += 1;
+                return Ok(TokenKind::Slash);
+            }
+            b'=' => {
+                self.pos += 1;
+                return Ok(TokenKind::Equal);
+            }
+            _ => {}
+        }
+
         if let Some(kind) = lex_single_char(b) {
             self.pos += 1;
             return Ok(kind);
@@ -274,7 +319,6 @@ impl<'a> Lexer<'a> {
 fn lex_single_char(b: u8) -> Option<TokenKind> {
     Some(match b {
         b':' => TokenKind::Colon,
-        b'=' => TokenKind::Equal,
         b';' => TokenKind::Semicolon,
         b',' => TokenKind::Comma,
         b'.' => TokenKind::Dot,
@@ -282,10 +326,6 @@ fn lex_single_char(b: u8) -> Option<TokenKind> {
         b')' => TokenKind::RParen,
         b'{' => TokenKind::LBrace,
         b'}' => TokenKind::RBrace,
-        b'+' => TokenKind::Plus,
-        b'-' => TokenKind::Minus,
-        b'*' => TokenKind::Star,
-        b'/' => TokenKind::Slash,
         _ => return None,
     })
 }

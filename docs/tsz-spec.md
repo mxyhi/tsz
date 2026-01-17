@@ -116,6 +116,15 @@ export function main(): bigint {
   - 规则：`<type>` 可省略，省略时从 `<expr>` 推断类型
   - 约束：当前支持 `number/bigint/boolean/string`；`<expr>` 必须可在编译期折叠（字面量/一元负号/引用其他 `const`；其中 `boolean/string` 不支持一元负号）；必须先声明后使用；不可与模块级符号（函数/导入）重名
 
+- 支持赋值（仅 `let` 可写）：
+  - `<name> = <expr>;`
+  - 约束：
+    - 赋值目标必须是已声明的 `let` 局部变量；禁止给 `const` 与函数参数赋值
+    - `<expr>` 的类型必须与变量类型一致（`number/bigint/boolean/string`；不允许 `void`）
+  - 可选语法糖：`+=` / `-=` / `*=` / `/=`
+    - 语义等价：`x <op>= y` ≡ `x = x <op> y`
+    - 约束：`<op>` 仅对 `number/bigint` 生效，且左右类型必须一致（复用二元运算规则）
+
 - 支持 `console.log`（标准输出）：
   - `console.log();`
   - `console.log(<expr>, <expr>, ...);`

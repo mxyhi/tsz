@@ -190,6 +190,18 @@ fn codegen_non_return_stmt(
             *local,
             init,
         ),
+        HirStmt::Assign { local, value, .. } => codegen_assign_stmt(
+            builder,
+            object_module,
+            program,
+            func_ids,
+            func,
+            param_vars,
+            local_vars,
+            string_pool,
+            *local,
+            value,
+        ),
         HirStmt::ConsoleLog { args, .. } => codegen_console_log_stmt(
             builder,
             object_module,
@@ -263,6 +275,36 @@ fn codegen_let_stmt(
         param_vars,
         local_vars,
         init,
+    )?;
+    builder.def_var(var, v);
+    Ok(())
+}
+
+fn codegen_assign_stmt(
+    builder: &mut FunctionBuilder<'_>,
+    object_module: &mut ObjectModule,
+    program: &HirProgram,
+    func_ids: &[FuncId],
+    func: &crate::HirFunction,
+    param_vars: &[Variable],
+    local_vars: &[Variable],
+    string_pool: &mut StringPool,
+    local: usize,
+    value: &HirExpr,
+) -> Result<(), TszError> {
+    let var = local_vars.get(local).copied().ok_or_else(|| TszError::Codegen {
+        message: "Local variable index out of bounds (internal error)".to_string(),
+    })?;
+    let v = expr::codegen_expr(
+        builder,
+        object_module,
+        program,
+        func_ids,
+        string_pool,
+        func,
+        param_vars,
+        local_vars,
+        value,
     )?;
     builder.def_var(var, v);
     Ok(())

@@ -5,6 +5,8 @@ use crate::{
 };
 use std::collections::HashMap;
 
+mod assign;
+
 #[derive(Debug, Clone)]
 enum ConstValue {
     Number(f64),
@@ -163,6 +165,12 @@ fn lower_stmt_prefix(ctx: &LowerCtx<'_>, state: &mut LowerFnState, stmts: &[Stmt
                 expr,
                 span,
             } => lower_const_stmt(ctx, state, name, *name_span, *annotated_type, expr, *span)?,
+            Stmt::Assign {
+                name,
+                name_span,
+                expr,
+                span,
+            } => assign::lower_assign_stmt(ctx, state, name, *name_span, expr, *span)?,
             Stmt::ConsoleLog { args, span } => lower_console_log_stmt(ctx, state, args, *span)?,
             Stmt::Return { span, .. } => {
                 return Err(TszError::Type {
@@ -183,7 +191,10 @@ fn lower_last_stmt(
 ) -> Result<(), TszError> {
     match last {
         Stmt::Return { expr, span } => lower_return_stmt(ctx, state, return_type, expr, *span),
-        Stmt::Let { span, .. } | Stmt::Const { span, .. } | Stmt::ConsoleLog { span, .. } => Err(TszError::Type {
+        Stmt::Let { span, .. }
+        | Stmt::Const { span, .. }
+        | Stmt::Assign { span, .. }
+        | Stmt::ConsoleLog { span, .. } => Err(TszError::Type {
             message: "The last statement in the function body must be return".to_string(),
             span: *span,
         }),

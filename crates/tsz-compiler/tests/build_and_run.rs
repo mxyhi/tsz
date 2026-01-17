@@ -513,6 +513,60 @@ export function main(): bigint {
 }
 
 #[test]
+fn build_and_run_let_assignment() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("tokio runtime");
+
+    rt.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let entry = dir.path().join("main.ts");
+        write_file(
+            &entry,
+            r#"
+export function main(): bigint {
+  let x: bigint = 1n;
+  x = x + 41n;
+  return x;
+}
+"#,
+        )
+        .expect("write");
+
+        build_and_run(entry, 42).await
+    })
+    .expect("ok");
+}
+
+#[test]
+fn build_and_run_compound_assignment_sugar() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("tokio runtime");
+
+    rt.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let entry = dir.path().join("main.ts");
+        write_file(
+            &entry,
+            r#"
+export function main(): bigint {
+  let x: bigint = 40n;
+  x += 2n;
+  return x;
+}
+"#,
+        )
+        .expect("write");
+
+        build_and_run(entry, 42).await
+    })
+    .expect("ok");
+}
+
+#[test]
 fn build_and_run_const_fold_and_inline() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_io()
@@ -636,6 +690,109 @@ export function main(): bigint {
             TszError::Type { message, .. } => {
                 assert!(
                     message.contains("const initializer must be a compile-time constant"),
+                    "unexpected error message: {message}"
+                );
+            }
+            other => panic!("expected type error, got: {other:?}"),
+        }
+        Ok::<(), TszError>(())
+    })
+    .expect("ok");
+}
+
+#[test]
+fn type_error_assign_to_const() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("tokio runtime");
+
+    rt.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let entry = dir.path().join("main.ts");
+        write_file(
+            &entry,
+            r#"
+export function main(): bigint {
+  const x: bigint = 1n;
+  x = 2n;
+  return x;
+}
+"#,
+        )
+        .expect("write");
+
+        let out_dir = tempfile::tempdir().map_err(|e| TszError::Io {
+            path: PathBuf::from("<tempdir>"),
+            source: e,
+        })?;
+        let output = out_dir.path().join(exe_name("tsz_test_out"));
+
+        let err = build_executable(BuildOptions {
+            entry,
+            output,
+            opt_level: OptLevel::None,
+        })
+        .await
+        .expect_err("should fail");
+
+        match err {
+            TszError::Type { message, .. } => {
+                assert!(
+                    message.contains("Cannot assign to const variable"),
+                    "unexpected error message: {message}"
+                );
+            }
+            other => panic!("expected type error, got: {other:?}"),
+        }
+        Ok::<(), TszError>(())
+    })
+    .expect("ok");
+}
+
+#[test]
+fn type_error_assign_to_parameter() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("tokio runtime");
+
+    rt.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let entry = dir.path().join("main.ts");
+        write_file(
+            &entry,
+            r#"
+function f(x: bigint): bigint {
+  x = 1n;
+  return x;
+}
+
+export function main(): bigint {
+  return f(0n);
+}
+"#,
+        )
+        .expect("write");
+
+        let out_dir = tempfile::tempdir().map_err(|e| TszError::Io {
+            path: PathBuf::from("<tempdir>"),
+            source: e,
+        })?;
+        let output = out_dir.path().join(exe_name("tsz_test_out"));
+
+        let err = build_executable(BuildOptions {
+            entry,
+            output,
+            opt_level: OptLevel::None,
+        })
+        .await
+        .expect_err("should fail");
+
+        match err {
+            TszError::Type { message, .. } => {
+                assert!(
+                    message.contains("Cannot assign to parameter"),
                     "unexpected error message: {message}"
                 );
             }

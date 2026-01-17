@@ -2,6 +2,8 @@ use crate::lexer::{Token, TokenKind};
 use crate::{ast::*, lexer, Span, TszError};
 use std::path::Path;
 
+mod stmt;
+
 pub fn parse_module(path: &Path, source: &str) -> Result<Module, TszError> {
     let tokens = lexer::lex(source)?;
     let mut p = Parser::new(source, tokens);
@@ -123,9 +125,16 @@ impl<'a> Parser<'a> {
             TokenKind::KwReturn => self.parse_return_stmt(),
             TokenKind::KwLet => self.parse_let_stmt(),
             TokenKind::KwConst => self.parse_const_stmt(),
-            TokenKind::Ident => self.parse_console_log_stmt(),
+            TokenKind::Ident => {
+                let is_dot = self.tokens.get(self.idx + 1).map(|t| t.kind) == Some(TokenKind::Dot);
+                if is_dot {
+                    self.parse_console_log_stmt()
+                } else {
+                    self.parse_assign_stmt()
+                }
+            }
             _ => Err(TszError::Parse {
-                message: "Only let/const/console.log(...)/return statements are supported".to_string(),
+                message: "Only let/const/<name> = <expr>/console.log(...)/return statements are supported".to_string(),
                 span: self.peek().span,
             }),
         }
@@ -180,49 +189,6 @@ impl<'a> Parser<'a> {
             name_span,
             annotated_type,
             expr,
-            span: Span {
-                start: start.start,
-                end: semi.end,
-            },
-        })
-    }
-
-    fn parse_console_log_stmt(&mut self) -> Result<Stmt, TszError> {
-        let start = self.peek().span;
-        let console = self.expect(TokenKind::Ident)?;
-        if self.slice(console.span) != "console" {
-            return Err(TszError::Parse {
-                message: "Only console.log(...) is supported here".to_string(),
-                span: console.span,
-            });
-        }
-
-        self.expect(TokenKind::Dot)?;
-
-        let log = self.expect(TokenKind::Ident)?;
-        if self.slice(log.span) != "log" {
-            return Err(TszError::Parse {
-                message: "Only console.log(...) is supported here".to_string(),
-                span: log.span,
-            });
-        }
-
-        self.expect(TokenKind::LParen)?;
-        let mut args = Vec::new();
-        if self.peek().kind != TokenKind::RParen {
-            loop {
-                args.push(self.parse_expr()?);
-                if self.eat(TokenKind::Comma) {
-                    continue;
-                }
-                break;
-            }
-        }
-        self.expect(TokenKind::RParen)?;
-        let semi = self.expect(TokenKind::Semicolon)?.span;
-
-        Ok(Stmt::ConsoleLog {
-            args,
             span: Span {
                 start: start.start,
                 end: semi.end,
@@ -557,146 +523,4 @@ fn expr_span(expr: &Expr) -> Span {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_minimal_main() {
-        let src = "export function main(): bigint { return 42n; }";
-        let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
-        assert_eq!(m.imports.len(), 0);
-        assert_eq!(m.functions.len(), 1);
-        assert_eq!(m.functions[0].name, "main");
-        assert_eq!(m.functions[0].return_type, Type::BigInt);
-    }
-
-    #[test]
-    fn parse_import_and_call() {
-        let src = r#"
-import { foo, bar } from "./lib.ts";
-export function main(): bigint { return foo(); }
-"#;
-        let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
-        assert_eq!(m.imports.len(), 1);
-        assert_eq!(m.imports[0].names.len(), 2);
-        assert_eq!(m.imports[0].names[0].name, "foo");
-        assert_eq!(m.imports[0].names[1].name, "bar");
-        assert_eq!(m.imports[0].from, "./lib.ts");
-        assert_eq!(m.functions.len(), 1);
-    }
-
-    #[test]
-    fn parse_void_return_stmt() {
-        let src = "export function main(): void { return; }";
-        let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
-        let Some(Stmt::Return { expr, .. }) = m.functions[0].body.first() else {
-            panic!("expected return stmt");
-        };
-        assert!(expr.is_none());
-    }
-
-    #[test]
-    fn parse_console_log_stmt() {
-        let src = r#"
-export function main(): void {
-  console.log("hi", 1, 2n);
-  return;
-}
-"#;
-        let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
-        assert_eq!(m.functions.len(), 1);
-        assert_eq!(m.functions[0].body.len(), 2);
-
-        let Some(Stmt::ConsoleLog { args, .. }) = m.functions[0].body.first() else {
-            panic!("expected console.log stmt");
-        };
-        assert_eq!(args.len(), 3);
-    }
-
-    #[test]
-    fn parse_let_stmt() {
-        let src = r#"
-export function main(): bigint {
-  let x: bigint = 1n;
-  let y = -x;
-  return y;
-}
-"#;
-        let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
-        assert_eq!(m.functions.len(), 1);
-        assert_eq!(m.functions[0].body.len(), 3);
-    }
-
-    #[test]
-    fn parse_const_stmt() {
-        let src = r#"
-export function main(): bigint {
-  const x: bigint = 1n;
-  const y = -x;
-  return y;
-}
-"#;
-        let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
-        assert_eq!(m.functions.len(), 1);
-        assert_eq!(m.functions[0].body.len(), 3);
-    }
-
-    #[test]
-    fn parse_function_params() {
-        let src = r#"
-export function add(a: bigint, b: bigint): bigint { return a; }
-"#;
-        let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
-        assert_eq!(m.functions.len(), 1);
-        let f = &m.functions[0];
-        assert_eq!(f.name, "add");
-        assert_eq!(f.params.len(), 2);
-        assert_eq!(f.params[0].name, "a");
-        assert_eq!(f.params[0].ty, Type::BigInt);
-        assert_eq!(f.params[1].name, "b");
-        assert_eq!(f.params[1].ty, Type::BigInt);
-    }
-
-    #[test]
-    fn parse_call_with_args() {
-        let src = r#"
-function add(a: bigint, b: bigint): bigint { return a; }
-export function main(): bigint { return add(1n, 2n); }
-"#;
-        let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
-        let f = &m.functions[1];
-        let Some(Stmt::Return { expr: Some(Expr::Call { callee, args, .. }), .. }) = f.body.first() else {
-            panic!("expected return add(1n, 2n)");
-        };
-        assert_eq!(callee, "add");
-        assert_eq!(args.len(), 2);
-    }
-
-    #[test]
-    fn parse_binary_ops_precedence_and_paren() {
-        let src = r#"
-export function main(): number {
-  return (1 + 2) * 3 + 4 / 2;
-}
-"#;
-        let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
-        let f = &m.functions[0];
-        let Some(Stmt::Return { expr: Some(expr), .. }) = f.body.first() else {
-            panic!("expected return");
-        };
-
-        let Expr::Binary { op: BinaryOp::Add, left, right, .. } = expr else {
-            panic!("expected top-level add");
-        };
-
-        // Left: (1 + 2) * 3
-        let Expr::Binary { op: BinaryOp::Mul, left: mul_l, right: mul_r, .. } = left.as_ref() else {
-            panic!("expected mul");
-        };
-        assert!(matches!(mul_r.as_ref(), Expr::Number { value, .. } if *value == 3.0));
-        assert!(matches!(mul_l.as_ref(), Expr::Binary { op: BinaryOp::Add, .. }));
-
-        // Right: 4 / 2
-        assert!(matches!(right.as_ref(), Expr::Binary { op: BinaryOp::Div, .. }));
-    }
-}
+mod tests;

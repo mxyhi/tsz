@@ -66,6 +66,16 @@ pub enum Stmt {
         expr: Expr,
         span: Span,
     },
+    /// Assignment: `<name> = <expr>;` (only `let` locals are assignable).
+    ///
+    /// Compound assignments (`+=` / `-=` / `*=` / `/=`) are parser-level sugar
+    /// and are desugared into a normal assignment with a binary expression RHS.
+    Assign {
+        name: String,
+        name_span: Span,
+        expr: Expr,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone)]
