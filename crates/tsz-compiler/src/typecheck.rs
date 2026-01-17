@@ -4,20 +4,20 @@ use crate::{
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-/// 语义分析 + 最小类型检查，并输出 HIR 供后续 codegen 使用。
+/// Semantic analysis + minimal type checking, producing HIR for codegen.
 ///
-/// TSZ v0/v0.1 约束（当前实现）：
-/// - 仅支持 0 参数函数
-/// - 函数体支持 `let`/`console.log(...)`，且最后一条语句必须是 `return`
-/// - 表达式支持：字面量、标识符（局部变量）、一元负号、0 参调用
-/// - import 仅支持 `import { a, b } from "<specifier>";`
+/// TSZ v0/v0.1 constraints (current implementation):
+/// - Only 0-argument functions
+/// - Function bodies support `let`/`console.log(...)`, and the last statement must be `return`
+/// - Expressions: literals, identifiers (locals), unary minus, 0-arg calls
+/// - Imports: only `import { a, b } from "<specifier>";`
 pub fn analyze(program: &Program) -> Result<HirProgram, TszError> {
     let module_index = build_module_index(program)?;
     let entry_module_idx = module_index
         .get(&program.entry)
         .copied()
         .ok_or_else(|| TszError::Type {
-            message: format!("入口模块未加载: {:?}", program.entry),
+            message: format!("Entry module not loaded: {:?}", program.entry),
             span: Span { start: 0, end: 0 },
         })?;
 
@@ -40,7 +40,7 @@ fn build_module_index(program: &Program) -> Result<HashMap<PathBuf, usize>, TszE
     for (idx, m) in program.modules.iter().enumerate() {
         if map.insert(m.path.clone(), idx).is_some() {
             return Err(TszError::Type {
-                message: format!("重复加载模块: {:?}", m.path),
+                message: format!("Duplicate module load: {:?}", m.path),
                 span: Span { start: 0, end: 0 },
             });
         }
@@ -73,7 +73,7 @@ fn index_functions(program: &Program) -> Result<(Vec<FuncInfo>, HashMap<FuncKey,
         for (func_idx, f) in module.functions.iter().enumerate() {
             if !seen.insert(f.name.clone()) {
                 return Err(TszError::Type {
-                    message: format!("模块内重复函数名: {} ({:?})", f.name, module.path),
+                    message: format!("Duplicate function name in module: {} ({:?})", f.name, module.path),
                     span: f.span,
                 });
             }
@@ -85,7 +85,7 @@ fn index_functions(program: &Program) -> Result<(Vec<FuncInfo>, HashMap<FuncKey,
             };
             if key_to_id.insert(key, id).is_some() {
                 return Err(TszError::Type {
-                    message: "函数定义重复（内部错误）".to_string(),
+                    message: "Duplicate function definition (internal error)".to_string(),
                     span: f.span,
                 });
             }
@@ -111,28 +111,28 @@ fn build_scopes(
 ) -> Result<Vec<HashMap<String, usize>>, TszError> {
     let mut scopes: Vec<HashMap<String, usize>> = vec![HashMap::new(); program.modules.len()];
 
-    // 先把模块内函数放入作用域（允许模块内互相调用）
+    // Insert module-local functions into scope (allow intra-module calls).
     for (id, info) in func_infos.iter().enumerate() {
         let scope = scopes
             .get_mut(info.module_idx)
             .ok_or_else(|| TszError::Type {
-                message: "模块索引越界（内部错误）".to_string(),
+                message: "Module index out of bounds (internal error)".to_string(),
                 span: info.span,
             })?;
         scope.insert(info.name.clone(), id);
     }
 
-    // 再处理 import：只允许导入 export 函数
+    // Then handle imports: only `export` functions can be imported.
     for (current_module_idx, module) in program.modules.iter().enumerate() {
         for import in &module.imports {
             let Some(dep_path) = &import.resolved_path else {
                 return Err(TszError::Type {
-                    message: "import 缺少 resolved_path（loader 内部错误）".to_string(),
+                    message: "import is missing resolved_path (internal loader error)".to_string(),
                     span: import.span,
                 });
             };
             let dep_idx = module_index.get(dep_path).copied().ok_or_else(|| TszError::Type {
-                message: format!("import 目标模块未加载: {:?}", dep_path),
+                message: format!("Import target module not loaded: {:?}", dep_path),
                 span: import.span,
             })?;
 
@@ -142,13 +142,13 @@ fn build_scopes(
                     name: name.name.clone(),
                 };
                 let target_id = key_to_id.get(&target_key).copied().ok_or_else(|| TszError::Type {
-                    message: format!("导入的符号不存在: {} from {:?}", name.name, dep_path),
+                    message: format!("Imported symbol does not exist: {} from {:?}", name.name, dep_path),
                     span: name.span,
                 })?;
 
                 if !func_infos[target_id].is_export {
                     return Err(TszError::Type {
-                        message: format!("只能导入 export 函数: {} from {:?}", name.name, dep_path),
+                        message: format!("Only export functions can be imported: {} from {:?}", name.name, dep_path),
                         span: name.span,
                     });
                 }
@@ -156,7 +156,10 @@ fn build_scopes(
                 let scope = &mut scopes[current_module_idx];
                 if scope.contains_key(&name.name) {
                     return Err(TszError::Type {
-                        message: format!("重复绑定名称（与本地函数或其他导入冲突）: {}", name.name),
+                        message: format!(
+                            "Duplicate binding name (conflicts with a local function or another import): {}",
+                            name.name
+                        ),
                         span: name.span,
                     });
                 }
@@ -177,7 +180,7 @@ fn find_entry_main(
         .modules
         .get(entry_module_idx)
         .ok_or_else(|| TszError::Type {
-            message: "入口模块索引越界（内部错误）".to_string(),
+            message: "Entry module index out of bounds (internal error)".to_string(),
             span: Span { start: 0, end: 0 },
         })?;
 
@@ -186,7 +189,7 @@ fn find_entry_main(
         .iter()
         .find(|f| f.is_export && f.name == "main")
         .ok_or_else(|| TszError::Type {
-            message: "缺少入口函数：export function main(): <type> { ... }".to_string(),
+            message: "Missing entry function: export function main(): <type> { ... }".to_string(),
             span: Span { start: 0, end: 0 },
         })?;
 
@@ -195,7 +198,7 @@ fn find_entry_main(
         name: main.name.clone(),
     };
     key_to_id.get(&key).copied().ok_or_else(|| TszError::Type {
-        message: "入口函数索引失败（内部错误）".to_string(),
+        message: "Failed to index entry function (internal error)".to_string(),
         span: main.span,
     })
 }
@@ -204,14 +207,14 @@ fn validate_entry_return_type(entry_id: usize, func_infos: &[FuncInfo]) -> Resul
     match func_infos
         .get(entry_id)
         .ok_or_else(|| TszError::Type {
-            message: "入口函数索引越界（内部错误）".to_string(),
+            message: "Entry function index out of bounds (internal error)".to_string(),
             span: Span { start: 0, end: 0 },
         })?
         .return_type
     {
         Type::Number | Type::BigInt | Type::Void => Ok(()),
         Type::Bool | Type::String => Err(TszError::Type {
-            message: "入口返回类型只支持 number/bigint/void".to_string(),
+            message: "Entry return type only supports number/bigint/void".to_string(),
             span: Span { start: 0, end: 0 },
         }),
     }
@@ -227,18 +230,18 @@ fn build_hir_functions(
 
     for (id, info) in func_infos.iter().enumerate() {
         let module = program.modules.get(info.module_idx).ok_or_else(|| TszError::Type {
-            message: "模块索引越界（内部错误）".to_string(),
+            message: "Module index out of bounds (internal error)".to_string(),
             span: info.span,
         })?;
         let func = module.functions.get(info.func_idx).ok_or_else(|| TszError::Type {
-            message: "函数索引越界（内部错误）".to_string(),
+            message: "Function index out of bounds (internal error)".to_string(),
             span: info.span,
         })?;
 
         validate_user_fn_return_type(func.return_type, func.span)?;
 
         let module_scope = scopes.get(info.module_idx).ok_or_else(|| TszError::Type {
-            message: "模块作用域索引越界（内部错误）".to_string(),
+            message: "Module scope index out of bounds (internal error)".to_string(),
             span: func.span,
         })?;
         let (locals, body) = lower_function_body(info.module_idx, func, module_scope, scopes, func_infos)?;
@@ -270,7 +273,7 @@ fn validate_user_fn_return_type(return_type: Type, span: Span) -> Result<(), Tsz
     match return_type {
         Type::Number | Type::BigInt | Type::Void => Ok(()),
         Type::Bool | Type::String => Err(TszError::Type {
-            message: "当前最小实现只支持 number/bigint/void 作为函数返回类型".to_string(),
+            message: "The current minimal subset only supports number/bigint/void as function return types".to_string(),
             span,
         }),
     }
@@ -290,7 +293,7 @@ struct LocalScopes {
 impl LocalScopes {
     fn new() -> Self {
         Self {
-            // 当前还没有嵌套 block；但用栈结构能自然扩展到未来的 `{ ... }`。
+            // No nested blocks yet, but a stack structure extends naturally to future `{ ... }` blocks.
             stack: vec![HashMap::new()],
         }
     }
@@ -303,7 +306,7 @@ impl LocalScopes {
         let current = self.stack.last_mut().expect("at least one scope");
         if current.contains_key(&name) {
             return Err(TszError::Type {
-                message: format!("重复声明的局部变量: {name}"),
+                message: format!("Duplicate local variable declaration: {name}"),
                 span: name_span,
             });
         }
@@ -344,7 +347,7 @@ fn lower_function_body(
 ) -> Result<(Vec<HirLocal>, Vec<HirStmt>), TszError> {
     if func.body.is_empty() {
         return Err(TszError::Type {
-            message: "空函数体（当前最小实现要求必须有 return）".to_string(),
+            message: "Empty function body (the current minimal subset requires a return)".to_string(),
             span: func.span,
         });
     }
@@ -370,7 +373,7 @@ fn lower_function_body(
             Stmt::ConsoleLog { args, span } => lower_console_log_stmt(&ctx, &mut state, args, *span)?,
             Stmt::Return { span, .. } => {
                 return Err(TszError::Type {
-                    message: "return 必须是函数体最后一条语句".to_string(),
+                    message: "return must be the last statement in the function body".to_string(),
                     span: *span,
                 });
             }
@@ -381,7 +384,7 @@ fn lower_function_body(
         Stmt::Return { expr, span } => lower_return_stmt(&ctx, &mut state, func.return_type, expr, *span)?,
         Stmt::Let { span, .. } | Stmt::ConsoleLog { span, .. } => {
             return Err(TszError::Type {
-                message: "函数体最后一条语句必须是 return".to_string(),
+                message: "The last statement in the function body must be return".to_string(),
                 span: *span,
             });
         }
@@ -399,10 +402,10 @@ fn lower_let_stmt(
     expr: &Expr,
     span: Span,
 ) -> Result<(), TszError> {
-    // 为了避免 `foo`/`foo()` 在“变量 vs 函数”间产生歧义，先禁止与模块级符号重名。
+    // To avoid ambiguity between `foo` and `foo()` (variable vs function), disallow collisions with module-level symbols.
     if ctx.module_scope.contains_key(name) {
         return Err(TszError::Type {
-            message: format!("局部变量与函数/导入重名: {name}"),
+            message: format!("Local variable name conflicts with a function/import: {name}"),
             span: name_span,
         });
     }
@@ -410,7 +413,7 @@ fn lower_let_stmt(
     let (hir_init, init_ty) =
         lower_expr_in_function(ctx.module_idx, expr, ctx.scopes, ctx.func_infos, &state.local_scopes)?;
 
-    // 当前 let 仅支持 number/bigint：避免引入 string/bool 运行时语义。
+    // `let` currently supports only number/bigint to avoid pulling in string/bool runtime semantics.
     validate_local_value_type(init_ty, ast_expr_span(expr))?;
 
     let declared_ty = annotated_type.unwrap_or(init_ty);
@@ -418,7 +421,7 @@ fn lower_let_stmt(
 
     if declared_ty != init_ty {
         return Err(TszError::Type {
-            message: format!("let 初始化表达式类型不匹配：声明为 {:?}，实际为 {:?}", declared_ty, init_ty),
+            message: format!("let initializer type mismatch: declared {:?}, got {:?}", declared_ty, init_ty),
             span: ast_expr_span(expr),
         });
     }
@@ -473,7 +476,7 @@ fn lower_return_stmt(
 ) -> Result<(), TszError> {
     if return_type == Type::Void && expr.is_some() {
         return Err(TszError::Type {
-            message: "void 函数只允许 `return;`".to_string(),
+            message: "void functions only allow `return;`".to_string(),
             span,
         });
     }
@@ -488,7 +491,7 @@ fn lower_return_stmt(
 
     if return_type != expr_ty {
         return Err(TszError::Type {
-            message: format!("返回类型不匹配：声明为 {:?}，实际为 {:?}", return_type, expr_ty),
+            message: format!("Return type mismatch: declared {:?}, got {:?}", return_type, expr_ty),
             span,
         });
     }
@@ -501,11 +504,11 @@ fn validate_local_decl_type(ty: Type, span: Span) -> Result<(), TszError> {
     match ty {
         Type::Number | Type::BigInt => Ok(()),
         Type::Void => Err(TszError::Type {
-            message: "let 变量类型不能是 void".to_string(),
+            message: "let variable type cannot be void".to_string(),
             span,
         }),
         Type::Bool | Type::String => Err(TszError::Type {
-            message: "当前 let 仅支持 number/bigint".to_string(),
+            message: "let currently only supports number/bigint".to_string(),
             span,
         }),
     }
@@ -515,11 +518,11 @@ fn validate_local_value_type(ty: Type, span: Span) -> Result<(), TszError> {
     match ty {
         Type::Number | Type::BigInt => Ok(()),
         Type::Void => Err(TszError::Type {
-            message: "let 初始化表达式不能是 void".to_string(),
+            message: "let initializer expression cannot be void".to_string(),
             span,
         }),
         Type::Bool | Type::String => Err(TszError::Type {
-            message: "当前 let 初始化表达式仅支持 number/bigint".to_string(),
+            message: "let initializer currently only supports number/bigint".to_string(),
             span,
         }),
     }
@@ -539,7 +542,7 @@ fn lower_expr_in_function(
         Expr::Ident { name, span } => {
             let Some(info) = locals.lookup(name) else {
                 return Err(TszError::Type {
-                    message: format!("未定义的变量: {name}"),
+                    message: format!("Undefined variable: {name}"),
                     span: *span,
                 });
             };
@@ -556,24 +559,24 @@ fn lower_expr_in_function(
                     ty,
                 )),
                 Type::Void | Type::Bool | Type::String => Err(TszError::Type {
-                    message: "不支持对该类型取负号".to_string(),
+                    message: "Unary minus is not supported for this type".to_string(),
                     span: *span,
                 }),
             }
         }
         Expr::Call { callee, span } => {
             let scope = scopes.get(module_idx).ok_or_else(|| TszError::Type {
-                message: "模块作用域索引越界（内部错误）".to_string(),
+                message: "Module scope index out of bounds (internal error)".to_string(),
                 span: *span,
             })?;
             let callee_id = scope.get(callee).copied().ok_or_else(|| TszError::Type {
-                message: format!("未定义的函数: {callee}"),
+                message: format!("Undefined function: {callee}"),
                 span: *span,
             })?;
             let ret_ty = func_infos
                 .get(callee_id)
                 .ok_or_else(|| TszError::Type {
-                    message: "函数索引越界（内部错误）".to_string(),
+                    message: "Function index out of bounds (internal error)".to_string(),
                     span: *span,
                 })?
                 .return_type;
@@ -596,17 +599,17 @@ fn lower_console_log_args(
         match ty {
             Type::Number | Type::BigInt => {}
             Type::String => {
-                // 当前 string 运行时仅支持“字符串字面量直出”。
+                // The current string runtime only supports string literals.
                 if !matches!(hir, HirExpr::String { .. }) {
                     return Err(TszError::Type {
-                        message: "当前 string 仅支持字符串字面量".to_string(),
+                        message: "string currently only supports string literals".to_string(),
                         span,
                     });
                 }
             }
             Type::Void | Type::Bool => {
                 return Err(TszError::Type {
-                    message: "console.log 参数只支持 number/bigint/string".to_string(),
+                    message: "console.log arguments only support number/bigint/string".to_string(),
                     span,
                 });
             }
@@ -628,7 +631,7 @@ fn ast_expr_span(expr: &Expr) -> Span {
 }
 
 fn mangle_symbol(module_idx: usize, name: &str) -> String {
-    // 约束：符号名必须稳定、可读、且仅包含常见字符（便于跨平台链接）。
+    // Constraint: symbols should be stable, readable, and use only common characters (cross-platform linking).
     let sanitized: String = name
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })

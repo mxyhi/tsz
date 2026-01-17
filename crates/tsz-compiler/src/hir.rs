@@ -12,16 +12,16 @@ pub struct HirProgram {
 
 #[derive(Debug, Clone)]
 pub struct HirFunction {
-    /// 代码生成使用的唯一符号名（已做内部 mangling）。
+    /// Unique symbol name for codegen (with internal mangling applied).
     pub symbol: String,
     pub return_type: Type,
 
-    /// 函数内局部变量（按声明顺序）。
+    /// Function-local variables (in declaration order).
     pub locals: Vec<HirLocal>,
-    /// 顺序语句（当前约束：最后一条必须是 `return`，无控制流）。
+    /// Sequential statements (current constraint: the last statement must be `return`, no control flow).
     pub body: Vec<HirStmt>,
 
-    /// 仅用于诊断与调试。
+    /// Only used for diagnostics and debugging.
     pub source: HirSourceInfo,
 }
 
@@ -42,13 +42,13 @@ pub struct HirSourceInfo {
 
 #[derive(Debug, Clone)]
 pub enum HirStmt {
-    /// 局部变量声明：`let <name> = <expr>;`
+    /// Local variable declaration: `let <name> = <expr>;`
     Let {
         local: HirLocalId,
         init: HirExpr,
         span: Span,
     },
-    /// 标准输出：`console.log(a, b, c);`
+    /// Stdout: `console.log(a, b, c);`
     ConsoleLog { args: Vec<HirExpr>, span: Span },
     Return { expr: Option<HirExpr>, span: Span },
 }
@@ -62,4 +62,3 @@ pub enum HirExpr {
     UnaryMinus { expr: Box<HirExpr>, span: Span },
     Call { callee: HirFuncId, span: Span },
 }
-

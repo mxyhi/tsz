@@ -16,7 +16,7 @@ pub use span::*;
 
 use std::path::{Path, PathBuf};
 
-/// 编译产物：目前只支持生成原生可执行文件（AOT）。
+/// Build output: currently only native executables (AOT) are supported.
 #[derive(Debug, Clone)]
 pub struct BuildOptions {
     pub entry: PathBuf,

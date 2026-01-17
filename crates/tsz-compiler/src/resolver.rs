@@ -6,12 +6,12 @@ use std::path::{Path, PathBuf};
 const DEFAULT_SOURCE_EXT: &str = "ts";
 const LEGACY_SOURCE_EXT: &str = "tsz";
 
-/// 递归加载入口模块及其依赖模块（`import { ... } from "<specifier>"`）。
+/// Recursively loads the entry module and its dependencies (`import { ... } from "<specifier>"`).
 ///
-/// 设计目标：
-/// - 规则极简、可预测
-/// - 异步 I/O（tokio）
-/// - 显式报错（不做 Node 的复杂兼容）
+/// Design goals:
+/// - Minimal, predictable rules
+/// - Async I/O (tokio)
+/// - Explicit errors (no complex Node compatibility)
 pub async fn load_program(entry: &Path) -> Result<Program, TszError> {
     let entry_file = resolve_entry_path(entry).await?;
     let entry_file = canonicalize(&entry_file).await?;
@@ -50,13 +50,13 @@ impl ModuleLoader {
             Some(VisitState::Visited) => return Ok(()),
             Some(VisitState::Visiting) => {
                 return Err(TszError::Resolve {
-                    message: format!("检测到循环依赖: {entry_path:?}"),
+                    message: format!("Cycle detected: {entry_path:?}"),
                 });
             }
             None => {}
         }
 
-        // 用显式栈做 DFS，避免 async 递归（Rust 不允许无限大小 Future）。
+        // Use an explicit DFS stack to avoid async recursion (Rust cannot represent infinitely-sized Futures).
         struct Frame {
             path: PathBuf,
             module: crate::Module,
@@ -90,7 +90,7 @@ impl ModuleLoader {
                 Some(VisitState::Visited) => continue,
                 Some(VisitState::Visiting) => {
                     return Err(TszError::Resolve {
-                        message: format!("检测到循环依赖: {dep:?}"),
+                        message: format!("Cycle detected: {dep:?}"),
                     });
                 }
                 None => {}
@@ -108,7 +108,7 @@ impl ModuleLoader {
     }
 
     fn finish(self) -> Vec<crate::Module> {
-        // 依赖优先的后序；后续阶段可以自行根据需要重排。
+        // Postorder with dependencies first; later stages can reorder as needed.
         self.modules
     }
 }
@@ -131,12 +131,12 @@ async fn resolve_entry_path(entry: &Path) -> Result<PathBuf, TszError> {
                 return resolve_package_entry(entry).await;
             }
             Err(TszError::Resolve {
-                message: format!("入口既不是文件也不是目录: {entry:?}"),
+                message: format!("Entry is neither a file nor a directory: {entry:?}"),
             })
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             if entry.extension().is_none() {
-                // 允许省略扩展名：优先 `.ts`，再兼容 `.tsz`
+                // Allow omitting the extension: prefer `.ts`, then try legacy `.tsz`.
                 for ext in [DEFAULT_SOURCE_EXT, LEGACY_SOURCE_EXT] {
                     let candidate = entry.with_extension(ext);
                     if let Some(meta) = metadata_optional(&candidate).await? {
@@ -151,7 +151,7 @@ async fn resolve_entry_path(entry: &Path) -> Result<PathBuf, TszError> {
             }
 
             Err(TszError::Resolve {
-                message: format!("入口不存在: {entry:?}"),
+                message: format!("Entry does not exist: {entry:?}"),
             })
         }
         Err(e) => Err(TszError::Io {
@@ -163,7 +163,7 @@ async fn resolve_entry_path(entry: &Path) -> Result<PathBuf, TszError> {
 
 async fn resolve_import_specifier(current_file: &Path, specifier: &str) -> Result<PathBuf, TszError> {
     let current_dir = current_file.parent().ok_or_else(|| TszError::Resolve {
-        message: format!("无法获取当前模块目录: {current_file:?}"),
+        message: format!("Failed to get current module directory: {current_file:?}"),
     })?;
 
     if is_relative_specifier(specifier) {
@@ -188,17 +188,17 @@ async fn resolve_relative_specifier(base_dir: &Path, specifier: &str) -> Result<
             return resolve_package_entry(&raw).await;
         }
         return Err(TszError::Resolve {
-            message: format!("无效的导入路径（既不是文件也不是目录）: {raw:?}"),
+            message: format!("Invalid import path (neither file nor directory): {raw:?}"),
         });
     }
 
     if raw.extension().is_some() {
         return Err(TszError::Resolve {
-            message: format!("导入模块不存在: {raw:?}"),
+            message: format!("Imported module does not exist: {raw:?}"),
         });
     }
 
-    // 允许省略扩展名：优先 `.ts`，再兼容 `.tsz`
+    // Allow omitting the extension: prefer `.ts`, then try legacy `.tsz`.
     for ext in [DEFAULT_SOURCE_EXT, LEGACY_SOURCE_EXT] {
         let candidate = raw.with_extension(ext);
         if metadata_optional(&candidate).await?.is_some() {
@@ -207,7 +207,7 @@ async fn resolve_relative_specifier(base_dir: &Path, specifier: &str) -> Result<
     }
 
     Err(TszError::Resolve {
-        message: format!("导入模块不存在: {raw:?}（尝试补全扩展名也失败）"),
+        message: format!("Imported module does not exist: {raw:?} (extension completion also failed)"),
     })
 }
 
@@ -232,14 +232,14 @@ async fn resolve_package_specifier(base_dir: &Path, specifier: &str) -> Result<P
     }
 
     Err(TszError::Resolve {
-        message: format!("无法在 node_modules 中找到包: {specifier}"),
+        message: format!("Package not found in node_modules: {specifier}"),
     })
 }
 
 fn parse_pkg_root_parts(specifier: &str) -> Result<Vec<&str>, TszError> {
     if specifier.is_empty() {
         return Err(TszError::Resolve {
-            message: "包名不能为空".to_string(),
+            message: "Package name cannot be empty".to_string(),
         });
     }
 
@@ -249,19 +249,19 @@ fn parse_pkg_root_parts(specifier: &str) -> Result<Vec<&str>, TszError> {
         let scope = first;
         let Some(name) = parts.next() else {
             return Err(TszError::Resolve {
-                message: format!("无效的 scoped 包名: {specifier}（期望 @scope/name）"),
+                message: format!("Invalid scoped package name: {specifier} (expected @scope/name)"),
             });
         };
         if parts.next().is_some() {
             return Err(TszError::Resolve {
-                message: format!("暂不支持包子路径导入: {specifier}（仅支持包根）"),
+                message: format!("Package subpath imports are not supported yet: {specifier} (only package root)"),
             });
         }
         Ok(vec![scope, name])
     } else {
         if parts.next().is_some() {
             return Err(TszError::Resolve {
-                message: format!("暂不支持包子路径导入: {specifier}（仅支持包根）"),
+                message: format!("Package subpath imports are not supported yet: {specifier} (only package root)"),
             });
         }
         Ok(vec![first])
@@ -278,17 +278,17 @@ async fn resolve_package_entry(package_dir: &Path) -> Result<PathBuf, TszError> 
         })?;
 
     let pkg: PackageJson = serde_json::from_str(&source).map_err(|e| TszError::Resolve {
-        message: format!("解析 package.json 失败: {package_json:?}: {e}"),
+        message: format!("Failed to parse package.json: {package_json:?}: {e}"),
     })?;
 
     let tsz = pkg.tsz.ok_or_else(|| TszError::Resolve {
-        message: format!("package.json 缺少 tsz 字段: {package_json:?}"),
+        message: format!("package.json is missing the tsz field: {package_json:?}"),
     })?;
 
     let entry = PathBuf::from(tsz.entry);
     if entry.is_absolute() {
         return Err(TszError::Resolve {
-            message: format!("tsz.entry 必须是相对路径: {package_json:?}"),
+            message: format!("tsz.entry must be a relative path: {package_json:?}"),
         });
     }
 
@@ -298,14 +298,14 @@ async fn resolve_package_entry(package_dir: &Path) -> Result<PathBuf, TszError> 
         Some(DEFAULT_SOURCE_EXT) | Some(LEGACY_SOURCE_EXT)
     ) {
         return Err(TszError::Resolve {
-            message: format!("tsz.entry 必须指向 .ts 或 .tsz 文件: {entry_path:?}"),
+            message: format!("tsz.entry must point to a .ts or .tsz file: {entry_path:?}"),
         });
     }
 
     match tokio::fs::metadata(&entry_path).await {
         Ok(meta) if meta.is_file() => Ok(entry_path),
         Ok(_) => Err(TszError::Resolve {
-            message: format!("tsz.entry 不是文件: {entry_path:?}"),
+            message: format!("tsz.entry is not a file: {entry_path:?}"),
         }),
         Err(e) => Err(TszError::Io {
             path: entry_path,

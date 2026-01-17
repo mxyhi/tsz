@@ -2,18 +2,18 @@
 #include <stdint.h>
 #include <stdio.h>
 
-// TSZ 最小运行时：为 `console.log(...)` 提供标准输出能力。
+// TSZ minimal runtime: provides stdout support for `console.log(...)`.
 //
-// 设计目标：
-// - API 非 variadic，便于 AOT 代码生成直接调用
-// - 尽量依赖 libc（stdio）以保持实现简洁
+// Design goals:
+// - Non-variadic API, easy for AOT codegen to call directly
+// - Prefer libc (stdio) to keep the implementation simple
 
 void tsz_log_i64(int64_t v) {
   fprintf(stdout, "%" PRId64, v);
 }
 
 void tsz_log_f64(double v) {
-  // 使用 %.17g 以尽量保留 f64 精度（兼顾可读性）
+  // Use %.17g to preserve f64 precision as much as possible (while keeping it readable).
   fprintf(stdout, "%.17g", v);
 }
 
@@ -31,4 +31,3 @@ void tsz_log_space(void) {
 void tsz_log_newline(void) {
   fputc('\n', stdout);
 }
-

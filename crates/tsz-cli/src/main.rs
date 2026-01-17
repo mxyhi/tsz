@@ -11,22 +11,22 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// 编译入口文件为原生可执行文件
+    /// Compile the entry file into a native executable
     Build {
-        /// 入口 TSZ 文件路径
+        /// Entry TSZ file path
         entry: PathBuf,
-        /// 输出可执行文件路径（默认：./a.out 或 ./a.exe）
+        /// Output executable path (default: ./a.out or ./a.exe)
         #[arg(short, long)]
         output: Option<PathBuf>,
-        /// 优化等级（默认 speed）
+        /// Optimization level (default: speed)
         #[arg(long, value_enum, default_value_t = OptArg::Speed)]
         opt: OptArg,
     },
-    /// 编译并运行入口文件（返回码由 main() 决定）
+    /// Compile and run the entry file (exit code is returned by main())
     Run {
-        /// 入口 TSZ 文件路径
+        /// Entry TSZ file path
         entry: PathBuf,
-        /// 优化等级（默认 speed）
+        /// Optimization level (default: speed)
         #[arg(long, value_enum, default_value_t = OptArg::Speed)]
         opt: OptArg,
     },

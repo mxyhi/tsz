@@ -97,7 +97,7 @@ impl<'a> Lexer<'a> {
             b'0'..=b'9' => self.lex_number_or_bigint(),
             b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'$' => self.lex_ident_or_keyword(),
             _ => Err(TszError::Lex {
-                message: format!("不支持的字符: 0x{b:02X}"),
+                message: format!("Unsupported character: 0x{b:02X}"),
                 span: Span {
                     start,
                     end: start + 1,
@@ -117,7 +117,7 @@ impl<'a> Lexer<'a> {
             }
         }
         let s = std::str::from_utf8(&self.src[start..self.pos]).map_err(|_| TszError::Lex {
-            message: "标识符不是有效 UTF-8".to_string(),
+            message: "Identifier is not valid UTF-8".to_string(),
             span: Span {
                 start,
                 end: self.pos,
@@ -139,12 +139,12 @@ impl<'a> Lexer<'a> {
         let start = self.pos;
         self.pos += 1;
 
-        // 整数部分
+        // Integer part
         while let Some(b'0'..=b'9') = self.peek_byte() {
             self.pos += 1;
         }
 
-        // 小数部分（bigint 不允许小数点）
+        // Fractional part (bigint cannot contain '.')
         let mut is_float = false;
         if let Some(b'.') = self.peek_byte() {
             is_float = true;
@@ -154,7 +154,7 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        // bigint 后缀 n（只允许纯整数）
+        // BigInt suffix 'n' (integers only)
         if !is_float {
             if let Some(b'n') = self.peek_byte() {
                 self.pos += 1;
@@ -162,10 +162,10 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        // 科学计数法暂不支持（保持子集可控、可优化）
+        // Scientific notation is not supported yet (keep the subset small/optimizable).
         if let Some(b'e' | b'E') = self.peek_byte() {
             return Err(TszError::Lex {
-                message: "暂不支持科学计数法".to_string(),
+                message: "Scientific notation is not supported yet".to_string(),
                 span: Span {
                     start,
                     end: self.pos + 1,
@@ -184,7 +184,7 @@ impl<'a> Lexer<'a> {
             self.pos += 1;
             match b {
                 b'\\' => {
-                    // 跳过转义后的一个字节（简化：不做完整转义语义，只保证能跳过）
+                    // Skip one byte after an escape (simplified: we do not implement full escape semantics).
                     if self.peek_byte().is_some() {
                         self.pos += 1;
                     }
@@ -194,7 +194,7 @@ impl<'a> Lexer<'a> {
             }
         }
         Err(TszError::Lex {
-            message: "字符串缺少闭合引号".to_string(),
+            message: "Unterminated string literal".to_string(),
             span: Span {
                 start,
                 end: self.pos,
@@ -214,7 +214,7 @@ impl<'a> Lexer<'a> {
 
             let Some(b'/') = self.peek_byte() else { break };
             if self.peek_byte_at(self.pos + 1) == Some(b'/') {
-                // 行注释
+                // Line comment
                 self.pos += 2;
                 while let Some(b) = self.peek_byte() {
                     self.pos += 1;
@@ -225,7 +225,7 @@ impl<'a> Lexer<'a> {
                 continue;
             }
             if self.peek_byte_at(self.pos + 1) == Some(b'*') {
-                // 块注释
+                // Block comment
                 let start = self.pos;
                 self.pos += 2;
                 loop {
@@ -237,7 +237,7 @@ impl<'a> Lexer<'a> {
                         (Some(_), _) => self.pos += 1,
                         (None, _) => {
                             return Err(TszError::Lex {
-                                message: "块注释缺少闭合 */".to_string(),
+                                message: "Unterminated block comment (missing */)".to_string(),
                                 span: Span {
                                     start,
                                     end: self.pos,

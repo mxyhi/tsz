@@ -39,9 +39,9 @@ pub struct FunctionDecl {
 #[derive(Debug, Clone)]
 pub enum Stmt {
     Return { expr: Option<Expr>, span: Span },
-    /// 标准输出：`console.log(a, b, c);`
+    /// Stdout: `console.log(a, b, c);`
     ConsoleLog { args: Vec<Expr>, span: Span },
-    /// 局部变量声明：`let <name>: <type>? = <expr>;`
+    /// Local variable declaration: `let <name>: <type>? = <expr>;`
     Let {
         name: String,
         name_span: Span,

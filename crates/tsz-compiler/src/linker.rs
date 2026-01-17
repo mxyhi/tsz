@@ -14,9 +14,9 @@ pub async fn link_executable(object_path: &Path, output_exe: &Path) -> Result<()
     let mut cmd = Command::new(&linker);
     cmd.arg(object_path).arg(&runtime_obj).arg("-o").arg(output_exe);
 
-    // 尽量保持链接过程可诊断；失败时把 stderr 带出来
+    // Keep the linking process diagnosable; include stderr on failure.
     let out = cmd.output().await.map_err(|e| TszError::Link {
-        message: format!("启动链接器失败: {linker:?}: {e}"),
+        message: format!("Failed to spawn linker: {linker:?}: {e}"),
     })?;
 
     if !out.status.success() {
@@ -24,7 +24,7 @@ pub async fn link_executable(object_path: &Path, output_exe: &Path) -> Result<()
         let stdout = String::from_utf8_lossy(&out.stdout);
         return Err(TszError::Link {
             message: format!(
-                "链接器返回失败码: {status}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+                "Linker exited with non-zero status: {status}\nstdout:\n{stdout}\nstderr:\n{stderr}",
                 status = out.status
             ),
         });
@@ -55,7 +55,7 @@ async fn compile_runtime_object(object_path: &Path, cc: &Path) -> Result<PathBuf
     cmd.arg("-std=c99").arg("-O2").arg("-c").arg(&c_path).arg("-o").arg(&obj_path);
 
     let out = cmd.output().await.map_err(|e| TszError::Runtime {
-        message: format!("启动 C 编译器失败: {cc:?}: {e}"),
+        message: format!("Failed to spawn C compiler: {cc:?}: {e}"),
     })?;
 
     if !out.status.success() {
@@ -63,13 +63,13 @@ async fn compile_runtime_object(object_path: &Path, cc: &Path) -> Result<PathBuf
         let stdout = String::from_utf8_lossy(&out.stdout);
         return Err(TszError::Runtime {
             message: format!(
-                "编译 TSZ runtime 失败: {status}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+                "Failed to compile TSZ runtime: {status}\nstdout:\n{stdout}\nstderr:\n{stderr}",
                 status = out.status
             ),
         });
     }
 
-    // 只保留 object，避免在输出目录残留 .c 文件
+    // Keep only the object file; avoid leaving a .c file in the output directory.
     let _ = tokio::fs::remove_file(&c_path).await;
 
     Ok(obj_path)

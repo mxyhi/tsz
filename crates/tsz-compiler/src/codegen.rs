@@ -12,7 +12,7 @@ pub fn emit_object(program: &HirProgram, opt_level: OptLevel) -> Result<Vec<u8>,
     let isa = build_isa(opt_level)?;
     let mut object_module = build_object_module(isa)?;
 
-    // 先声明所有 TSZ 函数，确保后续 call 时都能拿到 FuncId。
+    // Declare all TSZ functions first so later `call` sites can resolve `FuncId`.
     let mut func_sigs = Vec::with_capacity(program.functions.len());
     let mut func_ids = Vec::with_capacity(program.functions.len());
     for f in &program.functions {
@@ -20,24 +20,24 @@ pub fn emit_object(program: &HirProgram, opt_level: OptLevel) -> Result<Vec<u8>,
         let id = object_module
             .declare_function(&f.symbol, Linkage::Local, &sig)
             .map_err(|e| TszError::Codegen {
-                message: format!("declare function 失败: {}: {e}", f.symbol),
+                message: format!("declare_function failed: {}: {e}", f.symbol),
             })?;
         func_sigs.push(sig);
         func_ids.push(id);
     }
 
-    // 壳入口：C ABI 的 `int main()`（对外导出）。
+    // Wrapper entry: C ABI `int main()` (exported).
     let wrapper_sig = wrapper_main_sig(&*object_module.isa());
     let wrapper_id = object_module
         .declare_function("main", Linkage::Export, &wrapper_sig)
         .map_err(|e| TszError::Codegen {
-            message: format!("declare wrapper main 失败: {e}"),
+            message: format!("declare wrapper main failed: {e}"),
         })?;
 
     let runtime = declare_runtime_funcs(&mut object_module)?;
     let mut string_pool = StringPool::new();
 
-    // 定义所有 TSZ 函数。
+    // Define all TSZ functions.
     for (idx, f) in program.functions.iter().enumerate() {
         define_user_fn(
             &mut object_module,
@@ -51,7 +51,7 @@ pub fn emit_object(program: &HirProgram, opt_level: OptLevel) -> Result<Vec<u8>,
         )?;
     }
 
-    // 定义 wrapper main。
+    // Define wrapper main.
     define_wrapper_main(&mut object_module, wrapper_id, &wrapper_sig, program, &func_ids)?;
 
     finalize_and_emit(object_module)
@@ -66,21 +66,21 @@ fn build_isa(opt_level: OptLevel) -> Result<Arc<dyn isa::TargetIsa>, TszError> {
     flag_builder
         .set("opt_level", opt)
         .map_err(|e| TszError::Codegen {
-            message: format!("设置 cranelift opt_level 失败: {e}"),
+            message: format!("Failed to set cranelift opt_level: {e}"),
         })?;
-    // macOS/现代 Linux 默认链接 PIE，可执行文件要求代码为 PIC，避免 text-relocation。
+    // macOS/modern Linux default to PIE; the executable should be PIC to avoid text relocations.
     flag_builder
         .set("is_pic", "true")
         .map_err(|e| TszError::Codegen {
-            message: format!("设置 cranelift is_pic 失败: {e}"),
+            message: format!("Failed to set cranelift is_pic: {e}"),
         })?;
     let flags = settings::Flags::new(flag_builder);
 
     let isa_builder = cranelift_native::builder().map_err(|e| TszError::Codegen {
-        message: format!("获取本机 ISA 失败: {e}"),
+        message: format!("Failed to get native ISA builder: {e}"),
     })?;
     isa_builder.finish(flags).map_err(|e| TszError::Codegen {
-        message: format!("构建 ISA 失败: {e}"),
+        message: format!("Failed to build ISA: {e}"),
     })
 }
 
@@ -91,7 +91,7 @@ fn build_object_module(isa: Arc<dyn isa::TargetIsa>) -> Result<ObjectModule, Tsz
         cranelift_module::default_libcall_names(),
     )
     .map_err(|e| TszError::Codegen {
-        message: format!("创建 ObjectBuilder 失败: {e}"),
+        message: format!("Failed to create ObjectBuilder: {e}"),
     })?;
     Ok(ObjectModule::new(builder))
 }
@@ -115,7 +115,7 @@ fn define_user_fn(
     fn_builder.switch_to_block(block);
     fn_builder.seal_block(block);
 
-    // 声明局部变量（SSA 变量），并按 HirLocalId 建立索引映射。
+    // Declare local variables (SSA variables) and build the HirLocalId -> Variable mapping.
     let local_vars = declare_local_vars(&mut fn_builder, &f.locals)?;
     codegen_user_body(
         &mut fn_builder,
@@ -133,7 +133,7 @@ fn define_user_fn(
     object_module
         .define_function(func_id, &mut ctx)
         .map_err(|e| TszError::Codegen {
-            message: format!("define function 失败: {e}"),
+            message: format!("define_function failed: {e}"),
         })?;
     object_module.clear_context(&mut ctx);
     Ok(())
@@ -146,14 +146,14 @@ fn declare_local_vars(
     let mut local_vars = Vec::with_capacity(locals.len());
     for (idx, local) in locals.iter().enumerate() {
         let var = Variable::from_u32(u32::try_from(idx).map_err(|_| TszError::Codegen {
-            message: "局部变量数量过多（超过 u32）".to_string(),
+            message: "Too many local variables (exceeds u32)".to_string(),
         })?);
         let clif_ty = match local.ty {
             Type::Number => ir::types::F64,
             Type::BigInt => ir::types::I64,
             Type::Void | Type::Bool | Type::String => {
                 return Err(TszError::Codegen {
-                    message: format!("不支持的局部变量类型: {:?}", local.ty),
+                    message: format!("Unsupported local variable type: {:?}", local.ty),
                 });
             }
         };
@@ -177,7 +177,7 @@ fn codegen_user_body(
         .body
         .split_last()
         .ok_or_else(|| TszError::Codegen {
-            message: format!("空函数体（缺少 return）: {}", func.source.name),
+            message: format!("Empty function body (missing return): {}", func.source.name),
         })?;
 
     for stmt in prefix {
@@ -198,7 +198,7 @@ fn codegen_user_body(
             )?,
             HirStmt::Return { .. } => {
                 return Err(TszError::Codegen {
-                    message: format!("return 必须是函数体最后一条语句: {}", func.source.name),
+                    message: format!("return must be the last statement in the function body: {}", func.source.name),
                 });
             }
         }
@@ -206,7 +206,7 @@ fn codegen_user_body(
 
     let HirStmt::Return { expr, .. } = last else {
         return Err(TszError::Codegen {
-            message: format!("缺少 return 结尾: {}", func.source.name),
+            message: format!("Missing trailing return: {}", func.source.name),
         });
     };
     codegen_return_stmt(builder, object_module, program, func_ids, func, local_vars, expr.as_ref())
@@ -223,7 +223,7 @@ fn codegen_let_stmt(
     init: &HirExpr,
 ) -> Result<(), TszError> {
     let var = local_vars.get(local).copied().ok_or_else(|| TszError::Codegen {
-        message: "局部变量索引越界（内部错误）".to_string(),
+        message: "Local variable index out of bounds (internal error)".to_string(),
     })?;
     let v = codegen_expr(builder, object_module, program, func_ids, func, local_vars, init)?;
     builder.def_var(var, v);
@@ -241,14 +241,14 @@ fn codegen_return_stmt(
 ) -> Result<(), TszError> {
     match func.return_type {
         Type::Void => {
-            // typecheck 已保证 return; / expr 不存在
+            // typecheck guarantees `return;` and no expression.
             builder.ins().return_(&[]);
             Ok(())
         }
         Type::Number | Type::BigInt => {
             let Some(expr) = expr else {
                 return Err(TszError::Codegen {
-                    message: format!("缺少返回值表达式: {}", func.source.name),
+                    message: format!("Missing return value expression: {}", func.source.name),
                 });
             };
             let v = codegen_expr(builder, object_module, program, func_ids, func, local_vars, expr)?;
@@ -256,7 +256,7 @@ fn codegen_return_stmt(
             Ok(())
         }
         Type::Bool | Type::String => Err(TszError::Codegen {
-            message: "当前最小实现只支持 number/bigint/void".to_string(),
+            message: "The current minimal subset only supports number/bigint/void".to_string(),
         }),
     }
 }
@@ -277,12 +277,12 @@ fn define_wrapper_main(
     fn_builder.switch_to_block(block);
     fn_builder.seal_block(block);
 
-    // 入口 ABI：C 的 `int main()`；用户 `main()` 的返回值映射为进程退出码。
+    // Entry ABI: C `int main()`; the user `main()` return value maps to the process exit code.
     let user_id = func_ids
         .get(program.entry)
         .copied()
         .ok_or_else(|| TszError::Codegen {
-            message: "入口函数 FuncId 缺失（内部错误）".to_string(),
+            message: "Entry function FuncId missing (internal error)".to_string(),
         })?;
     let callee = object_module.declare_func_in_func(user_id, fn_builder.func);
     let call = fn_builder.ins().call(callee, &[]);
@@ -294,7 +294,7 @@ fn define_wrapper_main(
     object_module
         .define_function(wrapper_id, &mut ctx)
         .map_err(|e| TszError::Codegen {
-            message: format!("define wrapper main 失败: {e}"),
+            message: format!("define wrapper main failed: {e}"),
         })?;
     object_module.clear_context(&mut ctx);
     Ok(())
@@ -317,7 +317,7 @@ fn build_exit_code(
         }
         Type::Bool | Type::String => {
             return Err(TszError::Codegen {
-                message: "当前入口返回类型只支持 number/bigint/void".to_string(),
+                message: "Entry return type only supports number/bigint/void".to_string(),
             });
         }
     })
@@ -326,7 +326,7 @@ fn build_exit_code(
 fn finalize_and_emit(object_module: ObjectModule) -> Result<Vec<u8>, TszError> {
     let product = object_module.finish();
     product.emit().map_err(|e| TszError::Codegen {
-        message: format!("emit object 失败: {e}"),
+        message: format!("emit object failed: {e}"),
     })
 }
 
@@ -363,11 +363,11 @@ fn codegen_expr(
         HirExpr::Number { value, .. } => Ok(builder.ins().f64const(*value)),
         HirExpr::BigInt { value, .. } => Ok(builder.ins().iconst(ir::types::I64, *value)),
         HirExpr::String { .. } => Err(TszError::Codegen {
-            message: "string 表达式当前仅支持用于 console.log".to_string(),
+            message: "String expressions are currently only supported in console.log".to_string(),
         }),
         HirExpr::Local { local, .. } => {
             let var = local_vars.get(*local).copied().ok_or_else(|| TszError::Codegen {
-                message: "局部变量索引越界（内部错误）".to_string(),
+                message: "Local variable index out of bounds (internal error)".to_string(),
             })?;
             Ok(builder.use_var(var))
         }
@@ -377,20 +377,20 @@ fn codegen_expr(
                 Type::BigInt => Ok(builder.ins().ineg(v)),
                 Type::Number => Ok(builder.ins().fneg(v)),
                 Type::Void | Type::Bool | Type::String => Err(TszError::Codegen {
-                    message: "无效的一元负号类型（typecheck 应已拦截）".to_string(),
+                    message: "Invalid unary minus type (should have been blocked by typecheck)".to_string(),
                 }),
             }
         }
         HirExpr::Call { callee, .. } => {
             let callee_id = func_ids.get(*callee).copied().ok_or_else(|| TszError::Codegen {
-                message: "callee FuncId 缺失（内部错误）".to_string(),
+                message: "callee FuncId missing (internal error)".to_string(),
             })?;
             let callee_ref = object_module.declare_func_in_func(callee_id, builder.func);
             let call = builder.ins().call(callee_ref, &[]);
 
             match ty {
                 Type::Void => Err(TszError::Codegen {
-                    message: "void 函数不能作为表达式值使用".to_string(),
+                    message: "A void function cannot be used as an expression value".to_string(),
                 }),
                 Type::BigInt | Type::Number | Type::Bool | Type::String => Ok(builder.inst_results(call)[0]),
             }
@@ -407,7 +407,7 @@ fn hir_expr_type(program: &HirProgram, func: &crate::HirFunction, expr: &HirExpr
             .locals
             .get(*local)
             .ok_or_else(|| TszError::Codegen {
-                message: "局部变量索引越界（内部错误）".to_string(),
+                message: "Local variable index out of bounds (internal error)".to_string(),
             })?
             .ty,
         HirExpr::UnaryMinus { expr, .. } => hir_expr_type(program, func, expr)?,
@@ -415,7 +415,7 @@ fn hir_expr_type(program: &HirProgram, func: &crate::HirFunction, expr: &HirExpr
             .functions
             .get(*callee)
             .ok_or_else(|| TszError::Codegen {
-                message: "callee HIR 越界（内部错误）".to_string(),
+                message: "callee HIR out of bounds (internal error)".to_string(),
             })?
             .return_type,
     })
@@ -479,7 +479,7 @@ fn declare_import_fn(
     object_module
         .declare_function(name, Linkage::Import, &sig)
         .map_err(|e| TszError::Codegen {
-            message: format!("declare runtime function 失败: {name}: {e}"),
+            message: format!("declare runtime function failed: {name}: {e}"),
         })
 }
 
@@ -551,7 +551,7 @@ fn codegen_console_log_arg(
         }
         Type::String => codegen_console_log_string(builder, object_module, runtime, string_pool, arg),
         Type::Void | Type::Bool => Err(TszError::Codegen {
-            message: "console.log 参数类型非法（typecheck 应已拦截）".to_string(),
+            message: "Invalid console.log argument type (should have been blocked by typecheck)".to_string(),
         }),
     }
 }
@@ -565,7 +565,7 @@ fn codegen_console_log_string(
 ) -> Result<(), TszError> {
     let HirExpr::String { value, .. } = arg else {
         return Err(TszError::Codegen {
-            message: "string 参数不是字符串字面量（typecheck 应已拦截）".to_string(),
+            message: "string argument is not a string literal (should have been blocked by typecheck)".to_string(),
         });
     };
 
@@ -593,13 +593,13 @@ fn get_or_define_string_data(
     let data_id = object_module
         .declare_data(&name, Linkage::Local, false, false)
         .map_err(|e| TszError::Codegen {
-            message: format!("declare data 失败: {name}: {e}"),
+            message: format!("declare data failed: {name}: {e}"),
         })?;
 
     let mut data = DataDescription::new();
     data.define(s.as_bytes().to_vec().into_boxed_slice());
     object_module.define_data(data_id, &data).map_err(|e| TszError::Codegen {
-        message: format!("define data 失败: {name}: {e}"),
+        message: format!("define data failed: {name}: {e}"),
     })?;
 
     pool.ids.insert(s.to_string(), data_id);

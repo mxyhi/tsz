@@ -56,7 +56,7 @@ impl<'a> Parser<'a> {
         }
         if body.is_empty() {
             return Err(TszError::Parse {
-                message: "空函数体（当前最小实现要求必须有 return）".to_string(),
+                message: "Empty function body (the current minimal subset requires a return)".to_string(),
                 span: self.peek().span,
             });
         }
@@ -81,7 +81,7 @@ impl<'a> Parser<'a> {
             TokenKind::KwLet => self.parse_let_stmt(),
             TokenKind::Ident => self.parse_console_log_stmt(),
             _ => Err(TszError::Parse {
-                message: "当前语句只支持 let/console.log(...)/return".to_string(),
+                message: "Only let/console.log(...)/return statements are supported".to_string(),
                 span: self.peek().span,
             }),
         }
@@ -120,7 +120,7 @@ impl<'a> Parser<'a> {
         let console = self.expect(TokenKind::Ident)?;
         if self.slice(console.span) != "console" {
             return Err(TszError::Parse {
-                message: "当前语句只支持 console.log(...)".to_string(),
+                message: "Only console.log(...) is supported here".to_string(),
                 span: console.span,
             });
         }
@@ -130,7 +130,7 @@ impl<'a> Parser<'a> {
         let log = self.expect(TokenKind::Ident)?;
         if self.slice(log.span) != "log" {
             return Err(TszError::Parse {
-                message: "当前语句只支持 console.log(...)".to_string(),
+                message: "Only console.log(...) is supported here".to_string(),
                 span: log.span,
             });
         }
@@ -165,7 +165,7 @@ impl<'a> Parser<'a> {
         let mut names = Vec::new();
         if self.peek().kind == TokenKind::RBrace {
             return Err(TszError::Parse {
-                message: "import 列表不能为空".to_string(),
+                message: "Import list cannot be empty".to_string(),
                 span: self.peek().span,
             });
         }
@@ -208,7 +208,7 @@ impl<'a> Parser<'a> {
             "boolean" => Ok(Type::Bool),
             "string" => Ok(Type::String),
             _ => Err(TszError::Parse {
-                message: format!("不支持的类型: {s}"),
+                message: format!("Unsupported type: {s}"),
                 span: tok.span,
             }),
         }
@@ -258,7 +258,7 @@ impl<'a> Parser<'a> {
                 let tok = self.bump();
                 let s = self.slice(tok.span);
                 let v: f64 = s.parse().map_err(|_| TszError::Parse {
-                    message: format!("无效的 number 字面量: {s}"),
+                    message: format!("Invalid number literal: {s}"),
                     span: tok.span,
                 })?;
                 Ok(Expr::Number { value: v, span: tok.span })
@@ -268,7 +268,7 @@ impl<'a> Parser<'a> {
                 let raw = self.slice(tok.span);
                 let s = raw.strip_suffix('n').unwrap_or(raw);
                 let v: i64 = s.parse().map_err(|_| TszError::Parse {
-                    message: format!("无效的 bigint 字面量: {raw}"),
+                    message: format!("Invalid bigint literal: {raw}"),
                     span: tok.span,
                 })?;
                 Ok(Expr::BigInt { value: v, span: tok.span })
@@ -295,7 +295,7 @@ impl<'a> Parser<'a> {
                 }
             }
             _ => Err(TszError::Parse {
-                message: "暂只支持字面量/标识符/0 参函数调用/一元负号".to_string(),
+                message: "Currently only literals/identifiers/0-arg calls/unary minus are supported".to_string(),
                 span: tok.span,
             }),
         }
@@ -306,25 +306,25 @@ impl<'a> Parser<'a> {
         let bytes = raw.as_bytes();
         if bytes.len() < 2 {
             return Err(TszError::Parse {
-                message: "无效的字符串字面量".to_string(),
+                message: "Invalid string literal".to_string(),
                 span: tok.span,
             });
         }
         let quote = bytes[0];
         if quote != b'"' && quote != b'\'' {
             return Err(TszError::Parse {
-                message: "无效的字符串字面量（缺少引号）".to_string(),
+                message: "Invalid string literal (missing quotes)".to_string(),
                 span: tok.span,
             });
         }
         if bytes[bytes.len() - 1] != quote {
             return Err(TszError::Parse {
-                message: "无效的字符串字面量（缺少闭合引号）".to_string(),
+                message: "Invalid string literal (missing closing quote)".to_string(),
                 span: tok.span,
             });
         }
         String::from_utf8(bytes[1..bytes.len() - 1].to_vec()).map_err(|_| TszError::Parse {
-            message: "字符串不是有效 UTF-8".to_string(),
+            message: "String literal is not valid UTF-8".to_string(),
             span: tok.span,
         })
     }
@@ -353,7 +353,7 @@ impl<'a> Parser<'a> {
             Ok(self.bump())
         } else {
             Err(TszError::Parse {
-                message: format!("期望 {kind:?}，但得到 {got:?}", got = t.kind),
+                message: format!("Expected {kind:?}, got {got:?}", got = t.kind),
                 span: t.span,
             })
         }
