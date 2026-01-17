@@ -16,6 +16,14 @@ pub use span::*;
 
 use std::path::{Path, PathBuf};
 
+/// 只做“解析 + 类型检查”，不生成/不链接任何产物。
+pub async fn check(entry: &Path) -> Result<(), TszError> {
+    let program = resolver::load_program(entry).await?;
+    // 当前类型检查会生成用于 codegen 的 HIR；check 只关心是否能通过语义/类型约束。
+    let _hir = typecheck::analyze(&program)?;
+    Ok(())
+}
+
 /// Build output: currently only native executables (AOT) are supported.
 #[derive(Debug, Clone)]
 pub struct BuildOptions {

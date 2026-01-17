@@ -30,6 +30,11 @@ enum Command {
         #[arg(long, value_enum, default_value_t = OptArg::Speed)]
         opt: OptArg,
     },
+    /// Parse + typecheck only (no codegen/link)
+    Check {
+        /// Entry TSZ file path
+        entry: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -83,6 +88,10 @@ async fn run_cli(cli: Cli) -> Result<i32, tsz_compiler::TszError> {
                     source: e,
                 })?;
             Ok(status.code().unwrap_or(1))
+        }
+        Command::Check { entry } => {
+            tsz_compiler::check(&entry).await?;
+            Ok(0)
         }
     }
 }

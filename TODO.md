@@ -55,7 +55,7 @@
 ## 编译器与工具链
 
 - [x] CLI：`tsz build` / `tsz run`（支持 `--opt none|speed`）
-- [ ] CLI：`tsz check`（只做解析 + 类型检查，不生成/链接）
+- [x] CLI：`tsz check`（只做解析 + 类型检查，不生成/链接）
 
 - [ ] 诊断（Diagnostics）
   - [ ] Span → 行/列 + 源码片段高亮（类似 rustc）
