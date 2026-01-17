@@ -6,14 +6,9 @@ use crate::{
 use std::collections::HashMap;
 
 mod assign;
+mod const_eval;
 
-#[derive(Debug, Clone)]
-enum ConstValue {
-    Number(f64),
-    BigInt(i64),
-    Bool(bool),
-    String(String),
-}
+use const_eval::{try_eval_const_value, ConstValue};
 
 #[derive(Debug, Clone)]
 enum LocalValue {
@@ -296,7 +291,7 @@ fn lower_const_stmt(
 
     let Some(const_value) = try_eval_const_value(&hir_init) else {
         return Err(TszError::Type {
-            message: "const initializer must be a compile-time constant (literal or unary minus)".to_string(),
+            message: "const initializer must be a compile-time constant (literal/unary minus/binary ops)".to_string(),
             span: ast_expr_span(expr),
         });
     };
@@ -312,24 +307,6 @@ fn lower_const_stmt(
 
     // `const` is compile-time only for now, so it does not produce a HIR statement.
     Ok(())
-}
-
-fn try_eval_const_value(expr: &HirExpr) -> Option<ConstValue> {
-    match expr {
-        HirExpr::Number { value, .. } => Some(ConstValue::Number(*value)),
-        HirExpr::BigInt { value, .. } => Some(ConstValue::BigInt(*value)),
-        HirExpr::Bool { value, .. } => Some(ConstValue::Bool(*value)),
-        HirExpr::String { value, .. } => Some(ConstValue::String(value.clone())),
-        HirExpr::UnaryMinus { expr, .. } => match try_eval_const_value(expr)? {
-            ConstValue::Number(v) => Some(ConstValue::Number(-v)),
-            ConstValue::BigInt(v) => Some(ConstValue::BigInt(v.checked_neg()?)),
-            ConstValue::Bool(_) | ConstValue::String(_) => None,
-        },
-        HirExpr::Param { .. }
-        | HirExpr::Local { .. }
-        | HirExpr::Call { .. }
-        | HirExpr::Binary { .. } => None,
-    }
 }
 
 fn lower_console_log_stmt(

@@ -114,7 +114,7 @@ export function main(): bigint {
 - 支持 `const`（函数体内局部常量；编译期常量绑定）：
   - `const <name>: <type>? = <expr>;`
   - 规则：`<type>` 可省略，省略时从 `<expr>` 推断类型
-  - 约束：当前支持 `number/bigint/boolean/string`；`<expr>` 必须可在编译期折叠（字面量/一元负号/引用其他 `const`；其中 `boolean/string` 不支持一元负号）；必须先声明后使用；不可与模块级符号（函数/导入）重名
+  - 约束：当前支持 `number/bigint/boolean/string`；`<expr>` 必须可在编译期折叠（字面量/一元负号/二元运算（`+ - * /`）/引用其他 `const`；其中 `boolean/string` 不支持一元负号）；必须先声明后使用；不可与模块级符号（函数/导入）重名
 
 - 支持赋值（仅 `let` 可写）：
   - `<name> = <expr>;`
