@@ -111,16 +111,33 @@ export function main(): bigint {
   - 规则：块内声明的 `let/const` 只在该块及其子块内可见
   - 允许空块
 
-- 支持 `if / else`：
+- 支持 `if / else if / else`：
   - `if (<cond>) <stmt>`
   - `if (<cond>) <stmt> else <stmt>`
+  - `if (<cond>) <stmt> else if (<cond>) <stmt> ... else <stmt>`
   - 规则：`<cond>` 的类型必须为 `boolean`
   - `<stmt>` 可以是单语句或块 `{ ... }`
 
 - 支持 `while`（以及 `break/continue`）：
   - `while (<cond>) <stmt>`
   - 规则：`<cond>` 的类型必须为 `boolean`
-  - `break;` / `continue;` 仅允许出现在 `while` 的循环体内（按最近一层循环生效）
+  - `break;` / `continue;` 仅允许出现在循环体内（`while/for`；按最近一层循环生效）
+
+- 支持 `for`（以及 `break/continue`）：
+  - `for (<init?>; <cond?>; <update?>) <stmt>`
+  - `<init?>`（初始化子句）支持：
+    - `let <name>: <type>? = <expr>;`
+    - `const <name>: <type>? = <expr>;`
+    - `<name> = <expr>;`（以及 `+=` / `-=` / `*=` / `/=`）
+    - 空（省略）
+  - `<cond?>`（条件子句）支持：
+    - `<expr>`（类型必须为 `boolean`）
+    - 空（省略，语义等价于 `true`）
+  - `<update?>`（更新子句）支持：
+    - `<name> = <expr>`（以及 `+=` / `-=` / `*=` / `/=`）
+    - 空（省略）
+  - `break;` / `continue;` 仅允许出现在循环体内（`while/for`；按最近一层循环生效）
+  - 作用域：`for` 的 `<init?>` 声明的 `let/const` 绑定只在该 `for` 语句内部可见（包含条件/更新/循环体）
 
 - 支持 `let`（函数体内局部变量；块级作用域）：
   - `let <name>: <type>? = <expr>;`

@@ -1,4 +1,4 @@
-use crate::{Expr, HirLocal, HirStmt, Span, Stmt, TszError, Type};
+use crate::{Expr, HirExpr, HirLocal, HirStmt, Span, Stmt, TszError, Type};
 
 use super::assign;
 use super::const_eval::try_eval_const_value;
@@ -78,6 +78,22 @@ fn lower_stmt(ctx: &LowerCtx<'_>, state: &mut LowerFnState, out: &mut Vec<HirStm
             span,
         } => lower_if_stmt(ctx, state, out, cond, then_branch, else_branch.as_deref(), *span),
         Stmt::While { cond, body, span } => lower_while_stmt(ctx, state, out, cond, body, *span),
+        Stmt::For {
+            init,
+            cond,
+            update,
+            body,
+            span,
+        } => lower_for_stmt(
+            ctx,
+            state,
+            out,
+            init.as_deref(),
+            cond.as_ref(),
+            update.as_deref(),
+            body,
+            *span,
+        ),
         Stmt::Break { span } => lower_break_stmt(state, out, *span),
         Stmt::Continue { span } => lower_continue_stmt(state, out, *span),
     }
@@ -151,10 +167,169 @@ fn lower_while_stmt(
     Ok(false)
 }
 
+fn lower_for_stmt(
+    ctx: &LowerCtx<'_>,
+    state: &mut LowerFnState,
+    out: &mut Vec<HirStmt>,
+    init: Option<&Stmt>,
+    cond: Option<&Expr>,
+    update: Option<&Stmt>,
+    body: &Stmt,
+    span: Span,
+) -> Result<bool, TszError> {
+    // `for (...) { ... }` introduces a lexical scope for its init bindings.
+    state.local_scopes.push();
+
+    if let Some(init_stmt) = init {
+        lower_for_init_stmt(ctx, state, out, init_stmt)?;
+    }
+
+    let hir_cond = lower_for_cond_expr(ctx, state, cond, span)?;
+    let update_stmts = lower_for_update_stmt(ctx, state, update)?;
+
+    state.loop_depth += 1;
+    let (body_stmts, _body_terminated) = lower_stmt_in_new_scope(ctx, state, body)?;
+    state.loop_depth -= 1;
+
+    let body_stmts = if update_stmts.is_empty() {
+        body_stmts
+    } else {
+        let mut new_body = inject_for_update_before_continue(&body_stmts, &update_stmts);
+        // Normal fallthrough path runs the update before checking the next iteration condition.
+        new_body.extend(update_stmts.clone());
+        new_body
+    };
+
+    out.push(HirStmt::While {
+        cond: hir_cond,
+        body: body_stmts,
+        span,
+    });
+
+    state.local_scopes.pop();
+
+    // Without constant-condition analysis, conservatively assume `for` may fall through
+    // (the condition can be false on entry).
+    Ok(false)
+}
+
+fn lower_for_init_stmt(
+    ctx: &LowerCtx<'_>,
+    state: &mut LowerFnState,
+    out: &mut Vec<HirStmt>,
+    init: &Stmt,
+) -> Result<(), TszError> {
+    match init {
+        Stmt::Let {
+            name,
+            name_span,
+            annotated_type,
+            expr,
+            span,
+        } => lower_let_stmt(ctx, state, out, name, *name_span, *annotated_type, expr, *span),
+        Stmt::Const {
+            name,
+            name_span,
+            annotated_type,
+            expr,
+            span,
+        } => lower_const_stmt(ctx, state, name, *name_span, *annotated_type, expr, *span),
+        Stmt::Assign {
+            name,
+            name_span,
+            expr,
+            span,
+        } => assign::lower_assign_stmt(ctx, state, out, name, *name_span, expr, *span),
+        _ => Err(TszError::Type {
+            message: "for-loop initializer must be `let/const/<name> = <expr>` or empty".to_string(),
+            span: stmt_span(init),
+        }),
+    }
+}
+
+fn lower_for_cond_expr(
+    ctx: &LowerCtx<'_>,
+    state: &LowerFnState,
+    cond: Option<&Expr>,
+    span: Span,
+) -> Result<HirExpr, TszError> {
+    let Some(cond) = cond else {
+        return Ok(HirExpr::Bool { value: true, span });
+    };
+
+    let (hir_cond, cond_ty) =
+        lower_expr_in_function(ctx.module_idx, cond, ctx.scopes, ctx.func_infos, &state.local_scopes)?;
+    if cond_ty != Type::Bool {
+        return Err(TszError::Type {
+            message: "for-loop condition must be boolean".to_string(),
+            span: ast_expr_span(cond),
+        });
+    }
+    Ok(hir_cond)
+}
+
+fn lower_for_update_stmt(
+    ctx: &LowerCtx<'_>,
+    state: &mut LowerFnState,
+    update: Option<&Stmt>,
+) -> Result<Vec<HirStmt>, TszError> {
+    let Some(update) = update else { return Ok(Vec::new()) };
+
+    let Stmt::Assign {
+        name,
+        name_span,
+        expr,
+        span,
+    } = update
+    else {
+        return Err(TszError::Type {
+            message: "for-loop update clause must be `<name> = <expr>` or empty".to_string(),
+            span: stmt_span(update),
+        });
+    };
+
+    let mut out = Vec::with_capacity(1);
+    assign::lower_assign_stmt(ctx, state, &mut out, name, *name_span, expr, *span)?;
+    Ok(out)
+}
+
+fn inject_for_update_before_continue(stmts: &[HirStmt], update: &[HirStmt]) -> Vec<HirStmt> {
+    let mut out = Vec::with_capacity(stmts.len());
+    for stmt in stmts {
+        match stmt {
+            HirStmt::Continue { span } => {
+                // `for`-continue runs the update expression before checking the next iteration condition.
+                out.extend_from_slice(update);
+                out.push(HirStmt::Continue { span: *span });
+            }
+            HirStmt::If {
+                cond,
+                then_body,
+                else_body,
+                span,
+            } => out.push(HirStmt::If {
+                cond: cond.clone(),
+                then_body: inject_for_update_before_continue(then_body, update),
+                else_body: else_body
+                    .as_ref()
+                    .map(|b| inject_for_update_before_continue(b, update)),
+                span: *span,
+            }),
+            HirStmt::While { .. } => out.push(stmt.clone()),
+            HirStmt::Let { .. }
+            | HirStmt::Assign { .. }
+            | HirStmt::Break { .. }
+            | HirStmt::ConsoleLog { .. }
+            | HirStmt::Return { .. } => out.push(stmt.clone()),
+        }
+    }
+    out
+}
+
 fn lower_break_stmt(state: &LowerFnState, out: &mut Vec<HirStmt>, span: Span) -> Result<bool, TszError> {
     if state.loop_depth == 0 {
         return Err(TszError::Type {
-            message: "break is only allowed inside while".to_string(),
+            message: "break is only allowed inside while/for".to_string(),
             span,
         });
     }
@@ -165,7 +340,7 @@ fn lower_break_stmt(state: &LowerFnState, out: &mut Vec<HirStmt>, span: Span) ->
 fn lower_continue_stmt(state: &LowerFnState, out: &mut Vec<HirStmt>, span: Span) -> Result<bool, TszError> {
     if state.loop_depth == 0 {
         return Err(TszError::Type {
-            message: "continue is only allowed inside while".to_string(),
+            message: "continue is only allowed inside while/for".to_string(),
             span,
         });
     }
@@ -359,6 +534,7 @@ fn stmt_span(stmt: &Stmt) -> Span {
         | Stmt::Block { span, .. }
         | Stmt::If { span, .. }
         | Stmt::While { span, .. }
+        | Stmt::For { span, .. }
         | Stmt::Break { span }
         | Stmt::Continue { span }
         | Stmt::Let { span, .. }

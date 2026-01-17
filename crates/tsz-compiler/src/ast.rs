@@ -61,9 +61,22 @@ pub enum Stmt {
     },
     /// Loop: `while (<cond>) <body>`
     While { cond: Expr, body: Box<Stmt>, span: Span },
-    /// `break;` (only valid inside `while`)
+    /// Loop: `for (<init>; <cond>; <update>) <body>`
+    ///
+    /// Notes (TSZ subset):
+    /// - `<init>` supports `let/const/<name> = <expr>` or empty.
+    /// - `<cond>` is a boolean expression, or empty (treated as `true`).
+    /// - `<update>` supports `<name> = <expr>` (incl. `+=` etc) or empty.
+    For {
+        init: Option<Box<Stmt>>,
+        cond: Option<Expr>,
+        update: Option<Box<Stmt>>,
+        body: Box<Stmt>,
+        span: Span,
+    },
+    /// `break;` (only valid inside loops: `while` / `for`)
     Break { span: Span },
-    /// `continue;` (only valid inside `while`)
+    /// `continue;` (only valid inside loops: `while` / `for`)
     Continue { span: Span },
     /// Local variable declaration: `let <name>: <type>? = <expr>;`
     Let {

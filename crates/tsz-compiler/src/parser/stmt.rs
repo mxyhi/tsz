@@ -65,6 +65,127 @@ impl<'a> Parser<'a> {
         })
     }
 
+    pub(super) fn parse_for_stmt(&mut self) -> Result<Stmt, TszError> {
+        let start = self.expect(TokenKind::KwFor)?.span;
+        self.expect(TokenKind::LParen)?;
+
+        // init: `let/const/<name> = <expr>;` or empty.
+        let init = if self.eat(TokenKind::Semicolon) {
+            None
+        } else {
+            let init_stmt = match self.peek().kind {
+                TokenKind::KwLet => self.parse_let_stmt()?,
+                TokenKind::KwConst => self.parse_const_stmt()?,
+                TokenKind::Ident => {
+                    let is_dot = self.tokens.get(self.idx + 1).map(|t| t.kind) == Some(TokenKind::Dot);
+                    if is_dot {
+                        return Err(TszError::Parse {
+                            message: "for-loop initializer does not support console.log(...)".to_string(),
+                            span: self.peek().span,
+                        });
+                    }
+                    self.parse_assign_stmt()?
+                }
+                _ => {
+                    return Err(TszError::Parse {
+                        message: "for-loop initializer must be `let/const/<name> = <expr>` or empty".to_string(),
+                        span: self.peek().span,
+                    });
+                }
+            };
+            Some(Box::new(init_stmt))
+        };
+
+        // cond: `<expr>;` or empty.
+        let cond = if self.eat(TokenKind::Semicolon) {
+            None
+        } else {
+            let expr = self.parse_expr()?;
+            self.expect(TokenKind::Semicolon)?;
+            Some(expr)
+        };
+
+        // update: `<name> = <expr>` (incl. `+=` etc) or empty.
+        let update = if self.peek().kind == TokenKind::RParen {
+            None
+        } else {
+            Some(Box::new(self.parse_for_update_assign()?))
+        };
+        self.expect(TokenKind::RParen)?;
+
+        let body = Box::new(self.parse_stmt()?);
+
+        let end = self.prev_span();
+        Ok(Stmt::For {
+            init,
+            cond,
+            update,
+            body,
+            span: Span {
+                start: start.start,
+                end: end.end,
+            },
+        })
+    }
+
+    fn parse_for_update_assign(&mut self) -> Result<Stmt, TszError> {
+        let start = self.peek().span;
+        let name_tok = self.expect(TokenKind::Ident)?;
+        let name_span = name_tok.span;
+        let name = self.slice(name_tok.span).to_string();
+
+        // `<op>=` are syntax sugar, desugared into a normal assignment with a binary RHS.
+        let expr = match self.peek().kind {
+            TokenKind::Equal => {
+                self.bump(); // '='
+                self.parse_expr()?
+            }
+            TokenKind::PlusEqual | TokenKind::MinusEqual | TokenKind::StarEqual | TokenKind::SlashEqual => {
+                let op = match self.bump().kind {
+                    TokenKind::PlusEqual => BinaryOp::Add,
+                    TokenKind::MinusEqual => BinaryOp::Sub,
+                    TokenKind::StarEqual => BinaryOp::Mul,
+                    TokenKind::SlashEqual => BinaryOp::Div,
+                    _ => unreachable!("matched compound assignment token"),
+                };
+
+                let rhs = self.parse_expr()?;
+                let rhs_span = expr_span(&rhs);
+                let span = Span {
+                    start: name_span.start,
+                    end: rhs_span.end,
+                };
+                Expr::Binary {
+                    op,
+                    left: Box::new(Expr::Ident {
+                        name: name.clone(),
+                        span: name_span,
+                    }),
+                    right: Box::new(rhs),
+                    span,
+                }
+            }
+            _ => {
+                let got = self.peek();
+                return Err(TszError::Parse {
+                    message: "for-loop update clause only supports: =, +=, -=, *=, /=".to_string(),
+                    span: got.span,
+                });
+            }
+        };
+
+        let expr_end = expr_span(&expr).end;
+        Ok(Stmt::Assign {
+            name,
+            name_span,
+            expr,
+            span: Span {
+                start: start.start,
+                end: expr_end,
+            },
+        })
+    }
+
     pub(super) fn parse_break_stmt(&mut self) -> Result<Stmt, TszError> {
         let start = self.expect(TokenKind::KwBreak)?.span;
         let semi = self.expect(TokenKind::Semicolon)?.span;

@@ -45,8 +45,8 @@
 - [ ] 控制流（v2+）
   - [x] 块语句：`{ ... }`（真正块级作用域，允许嵌套）
   - [x] `while`（以及 `break/continue`）
-  - [ ] `if / else if / else`
-  - [ ] `for`（以及 `break/continue`）
+  - [x] `if / else if / else`
+  - [x] `for`（以及 `break/continue`）
 
 - [ ] 运算与比较（v2+）
   - [ ] 比较：`== != < <= > >=`（需要 boolean）

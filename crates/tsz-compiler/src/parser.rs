@@ -122,6 +122,7 @@ impl<'a> Parser<'a> {
             TokenKind::LBrace => self.parse_block_stmt(),
             TokenKind::KwIf => self.parse_if_stmt(),
             TokenKind::KwWhile => self.parse_while_stmt(),
+            TokenKind::KwFor => self.parse_for_stmt(),
             TokenKind::KwBreak => self.parse_break_stmt(),
             TokenKind::KwContinue => self.parse_continue_stmt(),
             TokenKind::Ident => {
@@ -134,7 +135,7 @@ impl<'a> Parser<'a> {
             }
             _ => Err(TszError::Parse {
                 message:
-                    "Only block/if/while/break/continue/let/const/<name> = <expr>/console.log(...)/return statements are supported"
+                    "Only block/if/while/for/break/continue/let/const/<name> = <expr>/console.log(...)/return statements are supported"
                         .to_string(),
                 span: self.peek().span,
             }),

@@ -220,6 +220,51 @@ export function main(): bigint {
 }
 
 #[test]
+fn parse_else_if_chain_stmt() {
+    let src = r#"
+export function main(): void {
+  if (true) { return; } else if (false) { return; } else { return; }
+}
+"#;
+    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let f = &m.functions[0];
+    let Some(Stmt::If { else_branch, .. }) = f.body.first() else {
+        panic!("expected if stmt");
+    };
+    let Some(else_branch) = else_branch else {
+        panic!("expected else branch");
+    };
+    assert!(matches!(else_branch.as_ref(), Stmt::If { .. }));
+}
+
+#[test]
+fn parse_for_stmt() {
+    let src = r#"
+export function main(): void {
+  for (let i: bigint = 0n; true; i += 1n) { continue; }
+  return;
+}
+"#;
+    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let f = &m.functions[0];
+    let Some(Stmt::For {
+        init,
+        cond,
+        update,
+        body,
+        ..
+    }) = f.body.first()
+    else {
+        panic!("expected for stmt");
+    };
+
+    assert!(init.is_some());
+    assert!(matches!(cond, Some(Expr::Bool { value: true, .. })));
+    assert!(update.is_some());
+    assert!(matches!(body.as_ref(), Stmt::Block { .. }));
+}
+
+#[test]
 fn parse_while_stmt_with_break() {
     let src = r#"
 export function main(): void {

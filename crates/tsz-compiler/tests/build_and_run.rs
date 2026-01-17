@@ -647,6 +647,33 @@ export function main(): bigint {
 }
 
 #[test]
+fn build_and_run_else_if_chain_returns_without_trailing_return() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("tokio runtime");
+
+    rt.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let entry = dir.path().join("main.ts");
+        write_file(
+            &entry,
+            r#"
+export function main(): bigint {
+  let a = false;
+  let b = false;
+  if (a) { return 1n; } else if (b) { return 2n; } else { return 3n; }
+}
+"#,
+        )
+        .expect("write");
+
+        build_and_run(entry, 3).await
+    })
+    .expect("ok");
+}
+
+#[test]
 fn build_and_run_while_with_break_and_continue() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_io()
@@ -717,11 +744,49 @@ export function main(): void {
 
         match err {
             TszError::Type { message, .. } => {
-                assert!(message.contains("break is only allowed inside while"), "unexpected: {message}");
+                assert!(
+                    message.contains("break is only allowed inside while/for"),
+                    "unexpected: {message}"
+                );
             }
             other => panic!("expected type error, got: {other:?}"),
         }
         Ok::<(), TszError>(())
+    })
+    .expect("ok");
+}
+
+#[test]
+fn build_and_run_for_with_break_and_continue() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("tokio runtime");
+
+    rt.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let entry = dir.path().join("main.ts");
+        write_file(
+            &entry,
+            r#"
+export function main(): bigint {
+  let out: bigint = 0n;
+  let first = true;
+  for (let i: bigint = 0n; true; i += 1n) {
+    if (first) {
+      first = false;
+      continue;
+    }
+    out = i;
+    break;
+  }
+  return out;
+}
+"#,
+        )
+        .expect("write");
+
+        build_and_run(entry, 1).await
     })
     .expect("ok");
 }
@@ -763,7 +828,7 @@ export function main(): void {
         match err {
             TszError::Type { message, .. } => {
                 assert!(
-                    message.contains("continue is only allowed inside while"),
+                    message.contains("continue is only allowed inside while/for"),
                     "unexpected: {message}"
                 );
             }
