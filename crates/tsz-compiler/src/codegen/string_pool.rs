@@ -27,8 +27,17 @@ impl StringPool {
                 message: format!("declare data failed: {name}: {e}"),
             })?;
 
+        let mut blob = Vec::with_capacity(8 + s.as_bytes().len());
+        let len = i64::try_from(s.as_bytes().len()).map_err(|_| TszError::Codegen {
+            message: "String literal too long".to_string(),
+        })?;
+        // String layout: [i64 len][u8 bytes...]. A string value points to the first byte (i.e. base+8).
+        blob.extend_from_slice(&len.to_ne_bytes());
+        blob.extend_from_slice(s.as_bytes());
+
         let mut data = DataDescription::new();
-        data.define(s.as_bytes().to_vec().into_boxed_slice());
+        data.define(blob.into_boxed_slice());
+        data.set_align(8);
         object_module.define_data(data_id, &data).map_err(|e| TszError::Codegen {
             message: format!("define data failed: {name}: {e}"),
         })?;
@@ -37,4 +46,3 @@ impl StringPool {
         Ok(data_id)
     }
 }
-

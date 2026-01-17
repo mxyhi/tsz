@@ -346,6 +346,121 @@ export function main(): bigint {
 }
 
 #[test]
+fn build_and_run_boolean_locals_and_call_stdout() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("tokio runtime");
+
+    rt.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let entry = dir.path().join("main.ts");
+        write_file(
+            &entry,
+            r#"
+function id(x: boolean): boolean {
+  return x;
+}
+
+export function main(): bigint {
+  let a = true;
+  let b: boolean = id(false);
+  console.log(a, b);
+  return 0n;
+}
+"#,
+        )
+        .expect("write");
+
+        let out_dir = tempfile::tempdir().map_err(|e| TszError::Io {
+            path: PathBuf::from("<tempdir>"),
+            source: e,
+        })?;
+        let output = out_dir.path().join(exe_name("tsz_test_out"));
+
+        build_executable(BuildOptions {
+            entry,
+            output: output.clone(),
+            opt_level: OptLevel::None,
+        })
+        .await?;
+
+        let out = tokio::process::Command::new(&output)
+            .output()
+            .await
+            .map_err(|e| TszError::Io {
+                path: output.clone(),
+                source: e,
+            })?;
+
+        assert_eq!(out.status.code().unwrap_or(1), 0);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "true false\n");
+        Ok::<(), TszError>(())
+    })
+    .expect("ok");
+}
+
+#[test]
+fn build_and_run_string_locals_and_return_stdout() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("tokio runtime");
+
+    rt.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let entry = dir.path().join("main.ts");
+        write_file(
+            &entry,
+            r#"
+function echo(s: string): string {
+  return s;
+}
+
+function greet(): string {
+  return "hi";
+}
+
+export function main(): bigint {
+  let a = echo(greet());
+  console.log(a);
+  let b: string = "world";
+  console.log(echo(b));
+  return 0n;
+}
+"#,
+        )
+        .expect("write");
+
+        let out_dir = tempfile::tempdir().map_err(|e| TszError::Io {
+            path: PathBuf::from("<tempdir>"),
+            source: e,
+        })?;
+        let output = out_dir.path().join(exe_name("tsz_test_out"));
+
+        build_executable(BuildOptions {
+            entry,
+            output: output.clone(),
+            opt_level: OptLevel::None,
+        })
+        .await?;
+
+        let out = tokio::process::Command::new(&output)
+            .output()
+            .await
+            .map_err(|e| TszError::Io {
+                path: output.clone(),
+                source: e,
+            })?;
+
+        assert_eq!(out.status.code().unwrap_or(1), 0);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "hi\nworld\n");
+        Ok::<(), TszError>(())
+    })
+    .expect("ok");
+}
+
+#[test]
 fn build_and_run_let_locals_stdout() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_io()

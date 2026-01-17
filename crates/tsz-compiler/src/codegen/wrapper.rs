@@ -10,12 +10,15 @@ pub(super) fn user_fn_sig(
     params: &[crate::HirParam],
     return_type: Type,
 ) -> Result<ir::Signature, TszError> {
+    let ptr_ty = target_isa.pointer_type();
     let mut sig = ir::Signature::new(target_isa.default_call_conv());
     for p in params {
         sig.params.push(ir::AbiParam::new(match p.ty {
             Type::Number => ir::types::F64,
             Type::BigInt => ir::types::I64,
-            Type::Void | Type::Bool | Type::String => {
+            Type::Bool => ir::types::I8,
+            Type::String => ptr_ty,
+            Type::Void => {
                 return Err(TszError::Codegen {
                     message: "Unsupported parameter type (should have been blocked by typecheck)".to_string(),
                 });
@@ -28,7 +31,7 @@ pub(super) fn user_fn_sig(
         Type::BigInt => sig.returns.push(ir::AbiParam::new(ir::types::I64)),
         Type::Number => sig.returns.push(ir::AbiParam::new(ir::types::F64)),
         Type::Bool => sig.returns.push(ir::AbiParam::new(ir::types::I8)),
-        Type::String => sig.returns.push(ir::AbiParam::new(ir::types::I64)),
+        Type::String => sig.returns.push(ir::AbiParam::new(ptr_ty)),
     }
 
     Ok(sig)

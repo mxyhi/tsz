@@ -101,7 +101,7 @@ export function main(): bigint {
 约束：
 
 - 仅支持 `function <name>(a: T, b: U, ...): <type> { ... }`
-  - 形参必须带类型标注；当前仅支持 `number/bigint`
+  - 形参必须带类型标注；当前支持 `number/bigint/boolean/string`
 - `export` 仅用于把函数暴露给其他模块导入
 
 ### 3.2 语句
@@ -109,17 +109,18 @@ export function main(): bigint {
 - 支持 `let`（函数体内局部变量；块级作用域）：
   - `let <name>: <type>? = <expr>;`
   - 规则：`<type>` 可省略，省略时从 `<expr>` 推断类型
-  - 约束：当前仅支持 `number/bigint`；必须先声明后使用；不可与模块级符号（函数/导入）重名
+  - 约束：当前支持 `number/bigint/boolean/string`；必须先声明后使用；不可与模块级符号（函数/导入）重名
 
 - 支持 `const`（函数体内局部常量；编译期常量绑定）：
   - `const <name>: <type>? = <expr>;`
   - 规则：`<type>` 可省略，省略时从 `<expr>` 推断类型
-  - 约束：当前仅支持 `number/bigint`；`<expr>` 必须可在编译期折叠（字面量/一元负号/引用其他 `const`）；必须先声明后使用；不可与模块级符号（函数/导入）重名
+  - 约束：当前支持 `number/bigint/boolean/string`；`<expr>` 必须可在编译期折叠（字面量/一元负号/引用其他 `const`；其中 `boolean/string` 不支持一元负号）；必须先声明后使用；不可与模块级符号（函数/导入）重名
 
 - 支持 `console.log`（标准输出）：
   - `console.log();`
   - `console.log(<expr>, <expr>, ...);`
   - 规则：参数之间用空格分隔输出，末尾自动追加换行
+  - 参数类型：`number` / `bigint` / `boolean` / `string`
   - 约束：函数体允许写多条 `console.log(...)`，但最后一条语句必须是 `return`
 
 - 支持 `return`：
@@ -130,7 +131,8 @@ export function main(): bigint {
 
 - `number` 字面量（内部为 `f64`）
 - `bigint` 字面量（内部为 **定长** `i64`，例如 `42n`）
-- `string` 字面量（仅用于 `console.log`；不提供通用 string 运行时）
+- `boolean` 字面量：`true` / `false`
+- `string` 字面量（UTF-8）
 - 标识符：局部变量/常量/参数引用（来自 `let/const/params`；`const` 当前会被编译期内联）
 - 一元负号：`-<expr>`
 - 二元运算：`+ - * /`（仅支持 `number/bigint`，且左右类型必须一致；`* /` 优先级高于 `+ -`）
@@ -144,8 +146,10 @@ export function main(): bigint {
 - `number`：`f64`
 - `bigint`：`i64`（不是任意精度）
 - `void`
+- `boolean`：`i8`（0/1）
+- `string`：指针（当前实现为长度前缀的 UTF-8 字节序列；可用于局部变量/参数/返回值）
 
-`boolean/string` 仅保留占位（当前实现不支持作为入口返回类型，也不提供运行时）。
+`main` 的入口返回类型仍仅支持 `number/bigint/void`。
 
 ### 4.2 入口函数与退出码
 

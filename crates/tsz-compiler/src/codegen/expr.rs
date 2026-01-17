@@ -2,14 +2,17 @@ use crate::{HirExpr, HirProgram, TszError, Type};
 use cranelift_codegen::ir::InstBuilder;
 use cranelift_codegen::ir::{self};
 use cranelift_frontend::{FunctionBuilder, Variable};
-use cranelift_module::{FuncId, Module as _};
+use cranelift_module::{DataId, FuncId, Module as _};
 use cranelift_object::ObjectModule;
+
+use super::string_pool::StringPool;
 
 pub(super) fn codegen_expr(
     builder: &mut FunctionBuilder<'_>,
     object_module: &mut ObjectModule,
     program: &HirProgram,
     func_ids: &[FuncId],
+    string_pool: &mut StringPool,
     func: &crate::HirFunction,
     param_vars: &[Variable],
     local_vars: &[Variable],
@@ -20,9 +23,8 @@ pub(super) fn codegen_expr(
     match expr {
         HirExpr::Number { value, .. } => Ok(builder.ins().f64const(*value)),
         HirExpr::BigInt { value, .. } => Ok(builder.ins().iconst(ir::types::I64, *value)),
-        HirExpr::String { .. } => Err(TszError::Codegen {
-            message: "String expressions are currently only supported in console.log".to_string(),
-        }),
+        HirExpr::Bool { value, .. } => Ok(builder.ins().iconst(ir::types::I8, if *value { 1 } else { 0 })),
+        HirExpr::String { value, .. } => codegen_string_literal(builder, object_module, string_pool, value),
         HirExpr::Param { param, .. } => codegen_param_value(builder, param_vars, *param),
         HirExpr::Local { local, .. } => codegen_local_value(builder, local_vars, *local),
         HirExpr::UnaryMinus { expr, .. } => codegen_unary_minus(
@@ -30,6 +32,7 @@ pub(super) fn codegen_expr(
             object_module,
             program,
             func_ids,
+            string_pool,
             func,
             param_vars,
             local_vars,
@@ -41,6 +44,7 @@ pub(super) fn codegen_expr(
             object_module,
             program,
             func_ids,
+            string_pool,
             func,
             param_vars,
             local_vars,
@@ -54,6 +58,7 @@ pub(super) fn codegen_expr(
             object_module,
             program,
             func_ids,
+            string_pool,
             func,
             param_vars,
             local_vars,
@@ -62,6 +67,20 @@ pub(super) fn codegen_expr(
             args,
         ),
     }
+}
+
+fn codegen_string_literal(
+    builder: &mut FunctionBuilder<'_>,
+    object_module: &mut ObjectModule,
+    string_pool: &mut StringPool,
+    value: &str,
+) -> Result<ir::Value, TszError> {
+    let data_id: DataId = string_pool.get_or_define_data(object_module, value)?;
+    let gv = object_module.declare_data_in_func(data_id, builder.func);
+    let ptr_ty = object_module.isa().pointer_type();
+    let base_ptr = builder.ins().global_value(ptr_ty, gv);
+    // String layout: [i64 len][u8 bytes...]. A string value points to the first byte.
+    Ok(builder.ins().iadd_imm(base_ptr, 8))
 }
 
 fn codegen_param_value(
@@ -91,13 +110,24 @@ fn codegen_unary_minus(
     object_module: &mut ObjectModule,
     program: &HirProgram,
     func_ids: &[FuncId],
+    string_pool: &mut StringPool,
     func: &crate::HirFunction,
     param_vars: &[Variable],
     local_vars: &[Variable],
     ty: Type,
     expr: &HirExpr,
 ) -> Result<ir::Value, TszError> {
-    let v = codegen_expr(builder, object_module, program, func_ids, func, param_vars, local_vars, expr)?;
+    let v = codegen_expr(
+        builder,
+        object_module,
+        program,
+        func_ids,
+        string_pool,
+        func,
+        param_vars,
+        local_vars,
+        expr,
+    )?;
     match ty {
         Type::BigInt => Ok(builder.ins().ineg(v)),
         Type::Number => Ok(builder.ins().fneg(v)),
@@ -112,6 +142,7 @@ fn codegen_binary(
     object_module: &mut ObjectModule,
     program: &HirProgram,
     func_ids: &[FuncId],
+    string_pool: &mut StringPool,
     func: &crate::HirFunction,
     param_vars: &[Variable],
     local_vars: &[Variable],
@@ -120,8 +151,28 @@ fn codegen_binary(
     left: &HirExpr,
     right: &HirExpr,
 ) -> Result<ir::Value, TszError> {
-    let lhs = codegen_expr(builder, object_module, program, func_ids, func, param_vars, local_vars, left)?;
-    let rhs = codegen_expr(builder, object_module, program, func_ids, func, param_vars, local_vars, right)?;
+    let lhs = codegen_expr(
+        builder,
+        object_module,
+        program,
+        func_ids,
+        string_pool,
+        func,
+        param_vars,
+        local_vars,
+        left,
+    )?;
+    let rhs = codegen_expr(
+        builder,
+        object_module,
+        program,
+        func_ids,
+        string_pool,
+        func,
+        param_vars,
+        local_vars,
+        right,
+    )?;
     match ty {
         Type::Number => Ok(match op {
             crate::HirBinaryOp::Add => builder.ins().fadd(lhs, rhs),
@@ -146,6 +197,7 @@ fn codegen_call(
     object_module: &mut ObjectModule,
     program: &HirProgram,
     func_ids: &[FuncId],
+    string_pool: &mut StringPool,
     func: &crate::HirFunction,
     param_vars: &[Variable],
     local_vars: &[Variable],
@@ -165,6 +217,7 @@ fn codegen_call(
             object_module,
             program,
             func_ids,
+            string_pool,
             func,
             param_vars,
             local_vars,
@@ -185,6 +238,7 @@ pub(super) fn hir_expr_type(program: &HirProgram, func: &crate::HirFunction, exp
     Ok(match expr {
         HirExpr::Number { .. } => Type::Number,
         HirExpr::BigInt { .. } => Type::BigInt,
+        HirExpr::Bool { .. } => Type::Bool,
         HirExpr::String { .. } => Type::String,
         HirExpr::Param { param, .. } => func
             .params

@@ -15,12 +15,12 @@
 - [x] console.log
   - [x] 语法：`console.log();` / `console.log(<expr>, <expr>, ...);`
   - [x] 输出：参数用空格分隔，末尾自动追加换行
-  - [x] 类型：支持 `number/bigint` + `string` 字面量（当前 string 仅用于输出）
+  - [x] 类型：支持 `number/bigint/boolean/string`（string 值基于最小运行时布局）
 
 - [x] 基础类型（v0）
   - [x] `number` / `bigint` / `void`（函数参数/返回值、入口 ABI）
-  - [ ] `boolean`（语法 + 类型检查 + codegen）
-  - [ ] `string`（局部变量/返回值/运行时；当前仅支持 string 字面量用于 console.log）
+  - [x] `boolean`（语法 + 类型检查 + codegen）
+  - [x] `string`（局部变量/参数/返回值/运行时；`console.log` 支持 string 值）
 
 - [x] let
   - [x] 语法：`let <name>: <type>? = <expr>;`（先支持函数体内；块级作用域）

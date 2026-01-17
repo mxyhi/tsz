@@ -5,20 +5,22 @@ use crate::{
 };
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum ConstValue {
     Number(f64),
     BigInt(i64),
+    Bool(bool),
+    String(String),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum LocalValue {
     Param(HirParamId),
     Local(HirLocalId),
     Const(ConstValue),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct LocalInfo {
     value: LocalValue,
     ty: Type,
@@ -38,7 +40,7 @@ impl LocalScopes {
     }
 
     fn lookup(&self, name: &str) -> Option<LocalInfo> {
-        self.stack.iter().rev().find_map(|scope| scope.get(name).copied())
+        self.stack.iter().rev().find_map(|scope| scope.get(name).cloned())
     }
 
     fn insert_current(&mut self, name: String, info: LocalInfo, name_span: Span) -> Result<(), TszError> {
@@ -208,7 +210,6 @@ fn lower_let_stmt(
     let (hir_init, init_ty) =
         lower_expr_in_function(ctx.module_idx, expr, ctx.scopes, ctx.func_infos, &state.local_scopes)?;
 
-    // `let` currently supports only number/bigint to avoid pulling in string/bool runtime semantics.
     validate_local_value_type(init_ty, ast_expr_span(expr))?;
 
     let declared_ty = annotated_type.unwrap_or(init_ty);
@@ -306,12 +307,14 @@ fn try_eval_const_value(expr: &HirExpr) -> Option<ConstValue> {
     match expr {
         HirExpr::Number { value, .. } => Some(ConstValue::Number(*value)),
         HirExpr::BigInt { value, .. } => Some(ConstValue::BigInt(*value)),
+        HirExpr::Bool { value, .. } => Some(ConstValue::Bool(*value)),
+        HirExpr::String { value, .. } => Some(ConstValue::String(value.clone())),
         HirExpr::UnaryMinus { expr, .. } => match try_eval_const_value(expr)? {
             ConstValue::Number(v) => Some(ConstValue::Number(-v)),
             ConstValue::BigInt(v) => Some(ConstValue::BigInt(v.checked_neg()?)),
+            ConstValue::Bool(_) | ConstValue::String(_) => None,
         },
-        HirExpr::String { .. }
-        | HirExpr::Param { .. }
+        HirExpr::Param { .. }
         | HirExpr::Local { .. }
         | HirExpr::Call { .. }
         | HirExpr::Binary { .. } => None,
@@ -371,13 +374,9 @@ fn lower_return_stmt(
 
 fn validate_local_decl_type(ty: Type, span: Span) -> Result<(), TszError> {
     match ty {
-        Type::Number | Type::BigInt => Ok(()),
+        Type::Number | Type::BigInt | Type::Bool | Type::String => Ok(()),
         Type::Void => Err(TszError::Type {
             message: "Local variable type cannot be void".to_string(),
-            span,
-        }),
-        Type::Bool | Type::String => Err(TszError::Type {
-            message: "Local variables currently only support number/bigint".to_string(),
             span,
         }),
     }
@@ -385,13 +384,9 @@ fn validate_local_decl_type(ty: Type, span: Span) -> Result<(), TszError> {
 
 fn validate_local_value_type(ty: Type, span: Span) -> Result<(), TszError> {
     match ty {
-        Type::Number | Type::BigInt => Ok(()),
+        Type::Number | Type::BigInt | Type::Bool | Type::String => Ok(()),
         Type::Void => Err(TszError::Type {
             message: "Local initializer expression cannot be void".to_string(),
-            span,
-        }),
-        Type::Bool | Type::String => Err(TszError::Type {
-            message: "Local initializer currently only supports number/bigint".to_string(),
             span,
         }),
     }
@@ -407,6 +402,7 @@ fn lower_expr_in_function(
     match expr {
         Expr::Number { value, span } => Ok((HirExpr::Number { value: *value, span: *span }, Type::Number)),
         Expr::BigInt { value, span } => Ok((HirExpr::BigInt { value: *value, span: *span }, Type::BigInt)),
+        Expr::Bool { value, span } => Ok((HirExpr::Bool { value: *value, span: *span }, Type::Bool)),
         Expr::String { value, span } => Ok((HirExpr::String { value: value.clone(), span: *span }, Type::String)),
         Expr::Ident { name, span } => {
             let Some(info) = locals.lookup(name) else {
@@ -421,6 +417,8 @@ fn lower_expr_in_function(
                 LocalValue::Const(v) => match v {
                     ConstValue::Number(value) => Ok((HirExpr::Number { value, span: *span }, Type::Number)),
                     ConstValue::BigInt(value) => Ok((HirExpr::BigInt { value, span: *span }, Type::BigInt)),
+                    ConstValue::Bool(value) => Ok((HirExpr::Bool { value, span: *span }, Type::Bool)),
+                    ConstValue::String(value) => Ok((HirExpr::String { value, span: *span }, Type::String)),
                 },
             }
         }
@@ -545,19 +543,10 @@ fn lower_console_log_args(
     for arg in args {
         let (hir, ty) = lower_expr_in_function(module_idx, arg, scopes, func_infos, locals)?;
         match ty {
-            Type::Number | Type::BigInt => {}
-            Type::String => {
-                // The current string runtime only supports string literals.
-                if !matches!(hir, HirExpr::String { .. }) {
-                    return Err(TszError::Type {
-                        message: "string currently only supports string literals".to_string(),
-                        span,
-                    });
-                }
-            }
-            Type::Void | Type::Bool => {
+            Type::Number | Type::BigInt | Type::Bool | Type::String => {}
+            Type::Void => {
                 return Err(TszError::Type {
-                    message: "console.log arguments only support number/bigint/string".to_string(),
+                    message: "console.log arguments cannot be void".to_string(),
                     span,
                 });
             }
@@ -571,6 +560,7 @@ fn ast_expr_span(expr: &Expr) -> Span {
     match expr {
         Expr::Number { span, .. }
         | Expr::BigInt { span, .. }
+        | Expr::Bool { span, .. }
         | Expr::String { span, .. }
         | Expr::Ident { span, .. }
         | Expr::UnaryMinus { span, .. }

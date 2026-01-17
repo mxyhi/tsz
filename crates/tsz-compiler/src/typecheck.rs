@@ -285,25 +285,17 @@ fn build_hir_functions(
 
 fn validate_user_fn_param_type(ty: Type, span: Span) -> Result<(), TszError> {
     match ty {
-        Type::Number | Type::BigInt => Ok(()),
+        Type::Number | Type::BigInt | Type::Bool | Type::String => Ok(()),
         Type::Void => Err(TszError::Type {
             message: "Parameter type cannot be void".to_string(),
-            span,
-        }),
-        Type::Bool | Type::String => Err(TszError::Type {
-            message: "The current minimal subset only supports number/bigint parameters".to_string(),
             span,
         }),
     }
 }
 
-fn validate_user_fn_return_type(return_type: Type, span: Span) -> Result<(), TszError> {
+fn validate_user_fn_return_type(return_type: Type, _span: Span) -> Result<(), TszError> {
     match return_type {
-        Type::Number | Type::BigInt | Type::Void => Ok(()),
-        Type::Bool | Type::String => Err(TszError::Type {
-            message: "The current minimal subset only supports number/bigint/void as function return types".to_string(),
-            span,
-        }),
+        Type::Number | Type::BigInt | Type::Void | Type::Bool | Type::String => Ok(()),
     }
 }
 

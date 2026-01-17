@@ -2,7 +2,7 @@ use crate::{HirExpr, HirProgram, HirStmt, TszError, Type};
 use cranelift_codegen::ir::InstBuilder;
 use cranelift_codegen::{ir};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
-use cranelift_module::{DataId, FuncId, Module as _};
+use cranelift_module::{FuncId, Module as _};
 use cranelift_object::ObjectModule;
 
 use super::expr;
@@ -29,9 +29,11 @@ pub(super) fn define_user_fn(
     fn_builder.switch_to_block(block);
     fn_builder.seal_block(block);
 
+    let ptr_ty = object_module.isa().pointer_type();
+
     // Declare param/local variables (SSA variables) and build HIR id -> Variable mappings.
-    let param_vars = declare_param_vars(&mut fn_builder, block, &f.params)?;
-    let local_vars = declare_local_vars(&mut fn_builder, f.params.len(), &f.locals)?;
+    let param_vars = declare_param_vars(&mut fn_builder, block, ptr_ty, &f.params)?;
+    let local_vars = declare_local_vars(&mut fn_builder, ptr_ty, f.params.len(), &f.locals)?;
 
     codegen_user_body(
         &mut fn_builder,
@@ -59,6 +61,7 @@ pub(super) fn define_user_fn(
 fn declare_param_vars(
     fn_builder: &mut FunctionBuilder<'_>,
     entry_block: ir::Block,
+    ptr_ty: ir::Type,
     params: &[crate::HirParam],
 ) -> Result<Vec<Variable>, TszError> {
     // Copy out block params first: we need to mutate `fn_builder` while iterating.
@@ -74,7 +77,7 @@ fn declare_param_vars(
         let var = Variable::from_u32(u32::try_from(idx).map_err(|_| TszError::Codegen {
             message: "Too many parameters (exceeds u32)".to_string(),
         })?);
-        let clif_ty = clif_param_ty(param.ty)?;
+        let clif_ty = clif_param_ty(ptr_ty, param.ty)?;
         fn_builder.declare_var(var, clif_ty);
         fn_builder.def_var(var, block_params[idx]);
         param_vars.push(var);
@@ -84,6 +87,7 @@ fn declare_param_vars(
 
 fn declare_local_vars(
     fn_builder: &mut FunctionBuilder<'_>,
+    ptr_ty: ir::Type,
     param_count: usize,
     locals: &[crate::HirLocal],
 ) -> Result<Vec<Variable>, TszError> {
@@ -97,27 +101,23 @@ fn declare_local_vars(
         let var = Variable::from_u32(u32::try_from(var_idx).map_err(|_| TszError::Codegen {
             message: "Too many local variables (exceeds u32)".to_string(),
         })?);
-        let clif_ty = match local.ty {
-            Type::Number => ir::types::F64,
-            Type::BigInt => ir::types::I64,
-            Type::Void | Type::Bool | Type::String => {
-                return Err(TszError::Codegen {
-                    message: format!("Unsupported local variable type: {:?}", local.ty),
-                });
-            }
-        };
+        let clif_ty = clif_param_ty(ptr_ty, local.ty).map_err(|_| TszError::Codegen {
+            message: format!("Unsupported local variable type: {:?}", local.ty),
+        })?;
         fn_builder.declare_var(var, clif_ty);
         local_vars.push(var);
     }
     Ok(local_vars)
 }
 
-fn clif_param_ty(ty: Type) -> Result<ir::Type, TszError> {
+fn clif_param_ty(ptr_ty: ir::Type, ty: Type) -> Result<ir::Type, TszError> {
     match ty {
         Type::Number => Ok(ir::types::F64),
         Type::BigInt => Ok(ir::types::I64),
-        Type::Void | Type::Bool | Type::String => Err(TszError::Codegen {
-            message: "Unsupported parameter type (should have been blocked by typecheck)".to_string(),
+        Type::Bool => Ok(ir::types::I8),
+        Type::String => Ok(ptr_ty),
+        Type::Void => Err(TszError::Codegen {
+            message: "Unsupported parameter type: void".to_string(),
         }),
     }
 }
@@ -160,6 +160,7 @@ fn codegen_user_body(
         func,
         param_vars,
         local_vars,
+        string_pool,
         last,
     )
 }
@@ -185,6 +186,7 @@ fn codegen_non_return_stmt(
             func,
             param_vars,
             local_vars,
+            string_pool,
             *local,
             init,
         ),
@@ -214,6 +216,7 @@ fn codegen_last_stmt(
     func: &crate::HirFunction,
     param_vars: &[Variable],
     local_vars: &[Variable],
+    string_pool: &mut StringPool,
     last: &HirStmt,
 ) -> Result<(), TszError> {
     let HirStmt::Return { expr, .. } = last else {
@@ -230,6 +233,7 @@ fn codegen_last_stmt(
         func,
         param_vars,
         local_vars,
+        string_pool,
         expr.as_ref(),
     )
 }
@@ -242,13 +246,24 @@ fn codegen_let_stmt(
     func: &crate::HirFunction,
     param_vars: &[Variable],
     local_vars: &[Variable],
+    string_pool: &mut StringPool,
     local: usize,
     init: &HirExpr,
 ) -> Result<(), TszError> {
     let var = local_vars.get(local).copied().ok_or_else(|| TszError::Codegen {
         message: "Local variable index out of bounds (internal error)".to_string(),
     })?;
-    let v = expr::codegen_expr(builder, object_module, program, func_ids, func, param_vars, local_vars, init)?;
+    let v = expr::codegen_expr(
+        builder,
+        object_module,
+        program,
+        func_ids,
+        string_pool,
+        func,
+        param_vars,
+        local_vars,
+        init,
+    )?;
     builder.def_var(var, v);
     Ok(())
 }
@@ -261,6 +276,7 @@ fn codegen_return_stmt(
     func: &crate::HirFunction,
     param_vars: &[Variable],
     local_vars: &[Variable],
+    string_pool: &mut StringPool,
     expr: Option<&HirExpr>,
 ) -> Result<(), TszError> {
     match func.return_type {
@@ -269,19 +285,26 @@ fn codegen_return_stmt(
             builder.ins().return_(&[]);
             Ok(())
         }
-        Type::Number | Type::BigInt => {
+        Type::Number | Type::BigInt | Type::Bool | Type::String => {
             let Some(expr) = expr else {
                 return Err(TszError::Codegen {
                     message: format!("Missing return value expression: {}", func.source.name),
                 });
             };
-            let v = expr::codegen_expr(builder, object_module, program, func_ids, func, param_vars, local_vars, expr)?;
+            let v = expr::codegen_expr(
+                builder,
+                object_module,
+                program,
+                func_ids,
+                string_pool,
+                func,
+                param_vars,
+                local_vars,
+                expr,
+            )?;
             builder.ins().return_(&[v]);
             Ok(())
         }
-        Type::Bool | Type::String => Err(TszError::Codegen {
-            message: "The current minimal subset only supports number/bigint/void".to_string(),
-        }),
     }
 }
 
@@ -333,17 +356,63 @@ fn codegen_console_log_arg(
 ) -> Result<(), TszError> {
     match expr::hir_expr_type(program, func, arg)? {
         Type::Number => {
-            let v = expr::codegen_expr(builder, object_module, program, func_ids, func, param_vars, local_vars, arg)?;
+            let v = expr::codegen_expr(
+                builder,
+                object_module,
+                program,
+                func_ids,
+                string_pool,
+                func,
+                param_vars,
+                local_vars,
+                arg,
+            )?;
             call_runtime1(builder, object_module, runtime.log_f64, v);
             Ok(())
         }
         Type::BigInt => {
-            let v = expr::codegen_expr(builder, object_module, program, func_ids, func, param_vars, local_vars, arg)?;
+            let v = expr::codegen_expr(
+                builder,
+                object_module,
+                program,
+                func_ids,
+                string_pool,
+                func,
+                param_vars,
+                local_vars,
+                arg,
+            )?;
             call_runtime1(builder, object_module, runtime.log_i64, v);
             Ok(())
         }
-        Type::String => codegen_console_log_string(builder, object_module, runtime, string_pool, arg),
-        Type::Void | Type::Bool => Err(TszError::Codegen {
+        Type::Bool => {
+            let v = expr::codegen_expr(
+                builder,
+                object_module,
+                program,
+                func_ids,
+                string_pool,
+                func,
+                param_vars,
+                local_vars,
+                arg,
+            )?;
+            call_runtime1(builder, object_module, runtime.log_bool, v);
+            Ok(())
+        }
+        Type::String => codegen_console_log_string(
+            builder,
+            object_module,
+            program,
+            func_ids,
+            runtime,
+            string_pool,
+            func,
+            param_vars,
+            local_vars,
+            arg,
+        ),
+        Type::Void => Err(TszError::Codegen {
             message: "Invalid console.log argument type (should have been blocked by typecheck)".to_string(),
         }),
     }
@@ -352,21 +421,31 @@ fn codegen_console_log_arg(
 fn codegen_console_log_string(
     builder: &mut FunctionBuilder<'_>,
     object_module: &mut ObjectModule,
+    program: &HirProgram,
+    func_ids: &[FuncId],
     runtime: &RuntimeFuncs,
     string_pool: &mut StringPool,
+    func: &crate::HirFunction,
+    param_vars: &[Variable],
+    local_vars: &[Variable],
     arg: &HirExpr,
 ) -> Result<(), TszError> {
-    let HirExpr::String { value, .. } = arg else {
-        return Err(TszError::Codegen {
-            message: "string argument is not a string literal (should have been blocked by typecheck)".to_string(),
-        });
-    };
-
-    let data_id: DataId = string_pool.get_or_define_data(object_module, value)?;
-    let gv = object_module.declare_data_in_func(data_id, builder.func);
-    let ptr_ty = object_module.isa().pointer_type();
-    let ptr = builder.ins().global_value(ptr_ty, gv);
-    let len = builder.ins().iconst(ir::types::I64, value.as_bytes().len() as i64);
+    // String layout: [i64 len][u8 bytes...]. A string value points to the first byte.
+    let ptr = expr::codegen_expr(
+        builder,
+        object_module,
+        program,
+        func_ids,
+        string_pool,
+        func,
+        param_vars,
+        local_vars,
+        arg,
+    )?;
+    let len_addr = builder.ins().iadd_imm(ptr, -8);
+    let len = builder
+        .ins()
+        .load(ir::types::I64, ir::MemFlags::new(), len_addr, 0);
 
     call_runtime2(builder, object_module, runtime.log_str, ptr, len);
     Ok(())

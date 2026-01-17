@@ -9,6 +9,7 @@ use cranelift_object::ObjectModule;
 pub(super) struct RuntimeFuncs {
     pub(super) log_i64: FuncId,
     pub(super) log_f64: FuncId,
+    pub(super) log_bool: FuncId,
     pub(super) log_str: FuncId,
     pub(super) log_space: FuncId,
     pub(super) log_newline: FuncId,
@@ -19,6 +20,7 @@ pub(super) fn declare_runtime_funcs(object_module: &mut ObjectModule) -> Result<
 
     let log_i64 = declare_import_fn(object_module, "tsz_log_i64", &[ir::types::I64], &[])?;
     let log_f64 = declare_import_fn(object_module, "tsz_log_f64", &[ir::types::F64], &[])?;
+    let log_bool = declare_import_fn(object_module, "tsz_log_bool", &[ir::types::I8], &[])?;
     let log_str = declare_import_fn(object_module, "tsz_log_str", &[ptr_ty, ir::types::I64], &[])?;
     let log_space = declare_import_fn(object_module, "tsz_log_space", &[], &[])?;
     let log_newline = declare_import_fn(object_module, "tsz_log_newline", &[], &[])?;
@@ -26,6 +28,7 @@ pub(super) fn declare_runtime_funcs(object_module: &mut ObjectModule) -> Result<
     Ok(RuntimeFuncs {
         log_i64,
         log_f64,
+        log_bool,
         log_str,
         log_space,
         log_newline,

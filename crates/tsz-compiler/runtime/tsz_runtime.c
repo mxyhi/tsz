@@ -17,6 +17,10 @@ void tsz_log_f64(double v) {
   fprintf(stdout, "%.17g", v);
 }
 
+void tsz_log_bool(uint8_t v) {
+  fputs(v ? "true" : "false", stdout);
+}
+
 void tsz_log_str(const uint8_t* ptr, int64_t len) {
   if (ptr == NULL || len <= 0) {
     return;

@@ -72,6 +72,7 @@ pub enum Stmt {
 pub enum Expr {
     Number { value: f64, span: Span },
     BigInt { value: i64, span: Span },
+    Bool { value: bool, span: Span },
     String { value: String, span: Span },
     Ident { name: String, span: Span },
     UnaryMinus { expr: Box<Expr>, span: Span },

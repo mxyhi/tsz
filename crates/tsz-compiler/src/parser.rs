@@ -415,6 +415,12 @@ impl<'a> Parser<'a> {
             TokenKind::Ident => {
                 let ident = self.bump();
                 let name = self.slice(ident.span).to_string();
+                if name == "true" || name == "false" {
+                    return Ok(Expr::Bool {
+                        value: name == "true",
+                        span: ident.span,
+                    });
+                }
                 if self.eat(TokenKind::LParen) {
                     let mut args = Vec::new();
                     if self.peek().kind != TokenKind::RParen {
@@ -539,7 +545,10 @@ impl<'a> Parser<'a> {
 
 fn expr_span(expr: &Expr) -> Span {
     match expr {
-        Expr::Number { span, .. } | Expr::BigInt { span, .. } | Expr::String { span, .. } => *span,
+        Expr::Number { span, .. }
+        | Expr::BigInt { span, .. }
+        | Expr::Bool { span, .. }
+        | Expr::String { span, .. } => *span,
         Expr::Ident { span, .. } => *span,
         Expr::UnaryMinus { span, .. } => *span,
         Expr::Call { span, .. } => *span,
