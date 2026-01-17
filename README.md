@@ -16,7 +16,7 @@ cargo run -p tsz-cli -- run examples/pkg-import
 
 见 `docs/tsz-spec.md`。
 
-## 支持语法（路线图）
+## 支持ts语法（路线图）
 
 - [ ] let
 - [ ] const
