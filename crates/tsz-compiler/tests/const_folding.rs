@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use tsz_compiler::{build_executable, BuildOptions, CompileOutput, OptLevel, TszError};
+use tsz_compiler::{build_executable, BuildOptions, CompileOutput, EmitKind, OptLevel, TszError};
 
 const MAX_ERRORS: usize = 50;
 
@@ -54,6 +54,7 @@ export function main(): bigint {
             output: output.clone(),
             opt_level: OptLevel::None,
             max_errors: MAX_ERRORS,
+            emit: EmitKind::Exe,
         })
         .await?;
         assert_no_errors(&compile);

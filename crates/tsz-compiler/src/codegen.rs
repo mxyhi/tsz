@@ -61,10 +61,56 @@ pub fn emit_object(program: &HirProgram, opt_level: OptLevel) -> Result<Vec<u8>,
     finalize_and_emit(object_module)
 }
 
+pub fn emit_ir(program: &HirProgram, opt_level: OptLevel) -> Result<String, TszError> {
+    let isa = build_isa(opt_level)?;
+    let mut object_module = build_object_module(isa)?;
+
+    let mut func_sigs = Vec::with_capacity(program.functions.len());
+    let mut func_ids = Vec::with_capacity(program.functions.len());
+    for f in &program.functions {
+        let sig = wrapper::user_fn_sig(&*object_module.isa(), &f.params, f.return_type)?;
+        let id = object_module
+            .declare_function(&f.symbol, Linkage::Local, &sig)
+            .map_err(|e| TszError::Codegen {
+                message: format!("declare_function failed: {}: {e}", f.symbol),
+            })?;
+        func_sigs.push(sig);
+        func_ids.push(id);
+    }
+
+    let runtime = runtime::declare_runtime_funcs(&mut object_module)?;
+    let mut string_pool = string_pool::StringPool::new();
+
+    let mut out = String::new();
+    for (idx, f) in program.functions.iter().enumerate() {
+        let ir = user_fn::build_user_fn_ir(
+            &mut object_module,
+            &func_sigs[idx],
+            f,
+            program,
+            &func_ids,
+            &runtime,
+            &mut string_pool,
+        )?;
+        out.push_str(&format!("; function {}\n", f.symbol));
+        out.push_str(&ir);
+        out.push('\n');
+    }
+
+    let wrapper_sig = wrapper::wrapper_main_sig(&*object_module.isa());
+    let wrapper_ir = wrapper::build_wrapper_main_ir(&mut object_module, &wrapper_sig, program, &func_ids)?;
+    out.push_str("; function main\n");
+    out.push_str(&wrapper_ir);
+    out.push('\n');
+
+    Ok(out)
+}
+
 fn build_isa(opt_level: OptLevel) -> Result<Arc<dyn isa::TargetIsa>, TszError> {
     let opt = match opt_level {
         OptLevel::None => "none",
         OptLevel::Speed => "speed",
+        OptLevel::Size => "speed_and_size",
     };
     let mut flag_builder = settings::builder();
     flag_builder

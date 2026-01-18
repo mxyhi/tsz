@@ -65,6 +65,56 @@ pub(super) fn define_user_fn(
     Ok(())
 }
 
+pub(super) fn build_user_fn_ir(
+    object_module: &mut ObjectModule,
+    sig: &ir::Signature,
+    f: &crate::HirFunction,
+    program: &HirProgram,
+    func_ids: &[FuncId],
+    runtime: &RuntimeFuncs,
+    string_pool: &mut StringPool,
+) -> Result<String, TszError> {
+    let mut ctx = object_module.make_context();
+    ctx.func.signature = sig.clone();
+
+    let mut builder_ctx = FunctionBuilderContext::new();
+    let mut fn_builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
+    let block = fn_builder.create_block();
+    fn_builder.append_block_params_for_function_params(block);
+    fn_builder.switch_to_block(block);
+    fn_builder.seal_block(block);
+
+    let ptr_ty = object_module.isa().pointer_type();
+
+    let param_vars = declare_param_vars(&mut fn_builder, block, ptr_ty, &f.params)?;
+    let local_vars = declare_local_vars(&mut fn_builder, ptr_ty, f.params.len(), &f.locals)?;
+
+    let mut state = stmt::StmtGenState::new(block);
+    let fallthrough = stmt::codegen_stmt_list(
+        &mut state,
+        &mut fn_builder,
+        object_module,
+        program,
+        func_ids,
+        runtime,
+        string_pool,
+        f,
+        &param_vars,
+        &local_vars,
+        &f.body,
+    )?;
+    if fallthrough {
+        return Err(TszError::Codegen {
+            message: format!("Missing trailing return (should have been blocked by typecheck): {}", f.source.name),
+        });
+    }
+
+    fn_builder.finalize();
+    let rendered = ctx.func.display().to_string();
+    object_module.clear_context(&mut ctx);
+    Ok(rendered)
+}
+
 fn declare_param_vars(
     fn_builder: &mut FunctionBuilder<'_>,
     entry_block: ir::Block,

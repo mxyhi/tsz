@@ -1,8 +1,9 @@
 use crate::diagnostics::{Diagnostics, SourceMap};
 use crate::{parser, Program, TszError};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use tokio::task::JoinSet;
 
 const DEFAULT_SOURCE_EXT: &str = "ts";
 const LEGACY_SOURCE_EXT: &str = "tsz";
@@ -18,7 +19,7 @@ pub async fn load_program(entry: &Path, diags: &mut Diagnostics) -> Result<Progr
     let entry_file = canonicalize(&entry_file).await?;
 
     let mut loader = ModuleLoader::new(diags);
-    loader.load_module(&entry_file).await?;
+    loader.load_all(entry_file.clone()).await?;
     let (modules, sources) = loader.finish();
     Ok(Program {
         entry: entry_file,
@@ -28,131 +29,244 @@ pub async fn load_program(entry: &Path, diags: &mut Diagnostics) -> Result<Progr
 }
 
 struct ModuleLoader<'d> {
-    state: HashMap<PathBuf, VisitState>,
-    modules: Vec<crate::Module>,
+    modules: HashMap<PathBuf, crate::Module>,
+    edges: HashMap<PathBuf, Vec<PathBuf>>,
     sources: SourceMap,
     diags: &'d mut Diagnostics,
+    max_errors: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum VisitState {
-    Visiting,
-    Visited,
+struct ModuleParseResult {
+    module: crate::Module,
+    source: String,
+    diagnostics: Diagnostics,
+}
+
+struct ModuleParseOutcome {
+    path: PathBuf,
+    result: Result<ModuleParseResult, TszError>,
 }
 
 impl<'d> ModuleLoader<'d> {
     fn new(diags: &'d mut Diagnostics) -> Self {
         Self {
-            state: HashMap::new(),
-            modules: Vec::new(),
+            modules: HashMap::new(),
+            edges: HashMap::new(),
             sources: SourceMap::default(),
+            max_errors: diags.max_errors(),
             diags,
         }
     }
 
-    async fn load_module(&mut self, entry_path: &Path) -> Result<(), TszError> {
-        let entry_path = canonicalize(entry_path).await?;
+    async fn load_all(&mut self, entry_path: PathBuf) -> Result<(), TszError> {
+        self.run_load_queue(entry_path).await
+    }
 
-        match self.state.get(&entry_path).copied() {
-            Some(VisitState::Visited) => return Ok(()),
-            Some(VisitState::Visiting) => {
-                self.diags.error(format!("Cycle detected: {entry_path:?}"));
-                return Ok(());
+    async fn run_load_queue(&mut self, entry: PathBuf) -> Result<(), TszError> {
+        let max_parallel = max_parallelism();
+        let mut scheduled = HashSet::new();
+        let mut pending = VecDeque::new();
+        scheduled.insert(entry.clone());
+        pending.push_back(entry.clone());
+
+        let mut join_set = JoinSet::new();
+        let mut in_flight = 0usize;
+
+        while !pending.is_empty() || in_flight > 0 {
+            while in_flight < max_parallel {
+                let Some(path) = pending.pop_front() else { break };
+                join_set.spawn(parse_module_task(path, self.max_errors));
+                in_flight += 1;
             }
-            None => {}
+
+            let Some(result) = join_set.join_next().await else { break };
+            in_flight = in_flight.saturating_sub(1);
+            let outcome = result.map_err(|e| TszError::Resolve {
+                message: format!("Failed to join module task: {e}"),
+            })?;
+            self.handle_outcome(outcome, &entry, &mut pending, &mut scheduled).await?;
         }
 
-        // Use an explicit DFS stack to avoid async recursion (Rust cannot represent infinitely-sized Futures).
-        struct Frame {
-            path: PathBuf,
-            module: crate::Module,
-            next_import: usize,
-        }
+        Ok(())
+    }
 
-        let mut stack = Vec::new();
-        self.state.insert(entry_path.clone(), VisitState::Visiting);
-        stack.push(Frame {
-            module: parse_module_file(&entry_path, self.diags, &mut self.sources).await?,
-            path: entry_path,
-            next_import: 0,
-        });
+    async fn handle_outcome(
+        &mut self,
+        outcome: ModuleParseOutcome,
+        entry: &Path,
+        pending: &mut VecDeque<PathBuf>,
+        scheduled: &mut HashSet<PathBuf>,
+    ) -> Result<(), TszError> {
+        let ModuleParseOutcome { path, result } = outcome;
+        let parsed = match result {
+            Ok(parsed) => parsed,
+            Err(err) => return self.handle_parse_error(path, entry, err),
+        };
 
-        while let Some(frame) = stack.last_mut() {
-            if frame.next_import >= frame.module.imports.len() {
-                let frame = stack.pop().expect("frame exists");
-                self.state.insert(frame.path.clone(), VisitState::Visited);
-                self.modules.push(frame.module);
-                continue;
-            }
+        self.merge_diagnostics(parsed.diagnostics);
+        self.sources.insert(path.clone(), parsed.source);
 
-            let import = &mut frame.module.imports[frame.next_import];
-            frame.next_import += 1;
+        let mut module = parsed.module;
+        let deps = resolve_imports_for_module(&mut module, self.diags).await?;
 
-            let dep = match resolve_import_specifier(&frame.path, &import.from).await {
-                Ok(dep) => dep,
-                Err(TszError::Resolve { message }) => {
-                    self.diags.error_at(&frame.path, import.span, message);
-                    continue;
-                }
-                Err(TszError::Io { path, source }) => {
-                    self.diags.error(format!("I/O error: {path:?}: {source}"));
-                    continue;
-                }
-                Err(e) => return Err(e),
-            };
-            let dep = canonicalize(&dep).await?;
-            import.resolved_path = Some(dep.clone());
+        self.edges.insert(path.clone(), deps.clone());
+        self.modules.insert(path.clone(), module);
 
-            match self.state.get(&dep).copied() {
-                Some(VisitState::Visited) => continue,
-                Some(VisitState::Visiting) => {
-                    self.diags.error(format!("Cycle detected: {dep:?}"));
-                    continue;
-                }
-                None => {}
-            }
-
-            self.state.insert(dep.clone(), VisitState::Visiting);
-            match parse_module_file(&dep, self.diags, &mut self.sources).await {
-                Ok(module) => stack.push(Frame {
-                    module,
-                    path: dep,
-                    next_import: 0,
-                }),
-                Err(TszError::Io { path, source }) => {
-                    self.diags.error(format!("I/O error: {path:?}: {source}"));
-                    self.state.insert(dep, VisitState::Visited);
-                }
-                Err(TszError::Resolve { message }) => {
-                    self.diags.error(message);
-                    self.state.insert(dep, VisitState::Visited);
-                }
-                Err(e) => return Err(e),
+        for dep in deps {
+            if scheduled.insert(dep.clone()) {
+                pending.push_back(dep);
             }
         }
 
         Ok(())
     }
 
-    fn finish(self) -> (Vec<crate::Module>, SourceMap) {
-        // Postorder with dependencies first; later stages can reorder as needed.
-        (self.modules, self.sources)
+    fn handle_parse_error(&mut self, path: PathBuf, entry: &Path, err: TszError) -> Result<(), TszError> {
+        if path == entry {
+            return Err(err);
+        }
+
+        match err {
+            TszError::Io { path, source } => {
+                self.diags.error(format!("I/O error: {path:?}: {source}"));
+            }
+            TszError::Resolve { message } => {
+                self.diags.error(message);
+            }
+            other => return Err(other),
+        }
+        Ok(())
+    }
+
+    fn merge_diagnostics(&mut self, local: Diagnostics) {
+        for diag in local.items() {
+            self.diags.push(diag.clone());
+        }
+    }
+
+    fn finish(mut self) -> (Vec<crate::Module>, SourceMap) {
+        let order = topo_sort_modules(&self.modules, &self.edges, self.diags);
+        let mut modules = Vec::with_capacity(order.len());
+        for path in order {
+            if let Some(module) = self.modules.remove(&path) {
+                modules.push(module);
+            }
+        }
+        (modules, self.sources)
     }
 }
 
-async fn parse_module_file(
-    path: &Path,
-    diags: &mut Diagnostics,
-    sources: &mut SourceMap,
-) -> Result<crate::Module, TszError> {
+async fn parse_module_task(path: PathBuf, max_errors: usize) -> ModuleParseOutcome {
+    let result = parse_module_file(&path, max_errors).await;
+    ModuleParseOutcome { path, result }
+}
+
+async fn parse_module_file(path: &Path, max_errors: usize) -> Result<ModuleParseResult, TszError> {
     let source = tokio::fs::read_to_string(path)
         .await
         .map_err(|e| TszError::Io {
             path: path.to_path_buf(),
             source: e,
         })?;
-    sources.insert(path.to_path_buf(), source.clone());
-    Ok(parser::parse_module(path, &source, diags))
+    let mut diags = Diagnostics::new(max_errors);
+    let module = parser::parse_module(path, &source, &mut diags);
+    Ok(ModuleParseResult {
+        module,
+        source,
+        diagnostics: diags,
+    })
+}
+
+async fn resolve_imports_for_module(
+    module: &mut crate::Module,
+    diags: &mut Diagnostics,
+) -> Result<Vec<PathBuf>, TszError> {
+    let mut deps = BTreeSet::new();
+    for import in &mut module.imports {
+        let dep = match resolve_import_specifier(&module.path, &import.from).await {
+            Ok(dep) => dep,
+            Err(TszError::Resolve { message }) => {
+                diags.error_at(&module.path, import.span, message);
+                continue;
+            }
+            Err(TszError::Io { path, source }) => {
+                diags.error(format!("I/O error: {path:?}: {source}"));
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
+        let dep = canonicalize(&dep).await?;
+        import.resolved_path = Some(dep.clone());
+        deps.insert(dep);
+    }
+    Ok(deps.into_iter().collect())
+}
+
+fn topo_sort_modules(
+    modules: &HashMap<PathBuf, crate::Module>,
+    edges: &HashMap<PathBuf, Vec<PathBuf>>,
+    diags: &mut Diagnostics,
+) -> Vec<PathBuf> {
+    let mut indegree = HashMap::new();
+    for path in modules.keys() {
+        indegree.insert(path.clone(), 0usize);
+    }
+    for (src, deps) in edges {
+        if !modules.contains_key(src) {
+            continue;
+        }
+        for dep in deps {
+            if let Some(count) = indegree.get_mut(dep) {
+                *count += 1;
+            }
+        }
+    }
+
+    let mut ready = BTreeSet::new();
+    for (path, count) in &indegree {
+        if *count == 0 {
+            ready.insert(path.clone());
+        }
+    }
+
+    let mut order = Vec::with_capacity(modules.len());
+    while let Some(path) = ready.iter().next().cloned() {
+        ready.remove(&path);
+        order.push(path.clone());
+        if let Some(deps) = edges.get(&path) {
+            for dep in deps {
+                if let Some(count) = indegree.get_mut(dep) {
+                    *count = count.saturating_sub(1);
+                    if *count == 0 {
+                        ready.insert(dep.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    if order.len() < indegree.len() {
+        let mut cyclic: Vec<_> = indegree
+            .into_iter()
+            .filter(|(_, count)| *count > 0)
+            .map(|(path, _)| path)
+            .collect();
+        cyclic.sort();
+        for path in &cyclic {
+            diags.error(format!("Cycle detected: {path:?}"));
+        }
+        order.extend(cyclic);
+    }
+
+    order
+}
+
+fn max_parallelism() -> usize {
+    // Keep concurrency bounded for predictable resource usage.
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .clamp(1, 8)
 }
 
 async fn resolve_entry_path(entry: &Path) -> Result<PathBuf, TszError> {

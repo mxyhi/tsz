@@ -22,6 +22,17 @@ cargo run -p tsz-cli -- run examples/control-flow.ts
 
 # const 示例（编译期常量折叠/内联）
 cargo run -p tsz-cli -- run examples/const.ts
+
+# 构建产物（exe/obj/ir）
+cargo run -p tsz-cli -- build examples/exit42.ts --emit exe
+cargo run -p tsz-cli -- build examples/exit42.ts --emit obj -o out.o
+cargo run -p tsz-cli -- build examples/exit42.ts --emit ir -o out.clif
+
+# OptLevel: size
+cargo run -p tsz-cli -- build examples/exit42.ts --opt size
+
+# 基准测试（compile/run）
+cargo run -p tsz-cli -- bench examples/control-flow.ts --compile-iters 10 --run-iters 30
 ```
 
 ## 规范（当前实现的最小子集）

@@ -87,6 +87,39 @@ pub(super) fn define_wrapper_main(
     Ok(())
 }
 
+pub(super) fn build_wrapper_main_ir(
+    object_module: &mut ObjectModule,
+    wrapper_sig: &ir::Signature,
+    program: &HirProgram,
+    func_ids: &[FuncId],
+) -> Result<String, TszError> {
+    let mut ctx = object_module.make_context();
+    ctx.func.signature = wrapper_sig.clone();
+
+    let mut builder_ctx = FunctionBuilderContext::new();
+    let mut fn_builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
+    let block = fn_builder.create_block();
+    fn_builder.switch_to_block(block);
+    fn_builder.seal_block(block);
+
+    let user_id = func_ids
+        .get(program.entry)
+        .copied()
+        .ok_or_else(|| TszError::Codegen {
+            message: "Entry function FuncId missing (internal error)".to_string(),
+        })?;
+    let callee = object_module.declare_func_in_func(user_id, fn_builder.func);
+    let call = fn_builder.ins().call(callee, &[]);
+    let exit_code = build_exit_code(&mut fn_builder, call, program.functions[program.entry].return_type)?;
+
+    fn_builder.ins().return_(&[exit_code]);
+    fn_builder.finalize();
+
+    let rendered = ctx.func.display().to_string();
+    object_module.clear_context(&mut ctx);
+    Ok(rendered)
+}
+
 fn build_exit_code(fn_builder: &mut FunctionBuilder<'_>, call: ir::Inst, return_type: Type) -> Result<ir::Value, TszError> {
     Ok(match return_type {
         Type::Void => fn_builder.ins().iconst(ir::types::I32, 0),

@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use tsz_compiler::{build_executable, BuildOptions, CompileOutput, OptLevel, TszError};
+use tsz_compiler::{build_executable, BuildOptions, CompileOutput, EmitKind, OptLevel, TszError};
 
 const MAX_ERRORS: usize = 50;
 
@@ -31,6 +31,36 @@ async fn build_and_run(entry: PathBuf, expected_exit: i32) -> Result<(), TszErro
         output: exe_path.clone(),
         opt_level: OptLevel::None,
         max_errors: MAX_ERRORS,
+        emit: EmitKind::Exe,
+    })
+    .await?;
+    assert_no_errors(&compile);
+
+    let status = tokio::process::Command::new(&exe_path)
+        .status()
+        .await
+        .map_err(|e| TszError::Io {
+            path: exe_path.clone(),
+            source: e,
+        })?;
+
+    assert_eq!(status.code().unwrap_or(1), expected_exit);
+    Ok(())
+}
+
+async fn build_and_run_with_opt(entry: PathBuf, expected_exit: i32, opt_level: OptLevel) -> Result<(), TszError> {
+    let dir = tempfile::tempdir().map_err(|e| TszError::Io {
+        path: PathBuf::from("<tempdir>"),
+        source: e,
+    })?;
+    let exe_path = dir.path().join(exe_name("tsz_test_out"));
+
+    let compile = build_executable(BuildOptions {
+        entry,
+        output: exe_path.clone(),
+        opt_level,
+        max_errors: MAX_ERRORS,
+        emit: EmitKind::Exe,
     })
     .await?;
     assert_no_errors(&compile);
@@ -90,6 +120,31 @@ export function main(): bigint {
         .expect("write");
 
         build_and_run(entry, 7).await
+    })
+    .expect("ok");
+}
+
+#[test]
+fn build_and_run_opt_size() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("tokio runtime");
+
+    rt.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let entry = dir.path().join("main.ts");
+        write_file(
+            &entry,
+            r#"
+export function main(): bigint {
+  return 3n;
+}
+"#,
+        )
+        .expect("write");
+
+        build_and_run_with_opt(entry, 3, OptLevel::Size).await
     })
     .expect("ok");
 }
@@ -354,6 +409,7 @@ export function main(): bigint {
             output: output.clone(),
             opt_level: OptLevel::None,
             max_errors: MAX_ERRORS,
+            emit: EmitKind::Exe,
         })
         .await?;
         assert_no_errors(&compile);
@@ -411,6 +467,7 @@ export function main(): bigint {
             output: output.clone(),
             opt_level: OptLevel::None,
             max_errors: MAX_ERRORS,
+            emit: EmitKind::Exe,
         })
         .await?;
         assert_no_errors(&compile);
@@ -473,6 +530,7 @@ export function main(): bigint {
             output: output.clone(),
             opt_level: OptLevel::None,
             max_errors: MAX_ERRORS,
+            emit: EmitKind::Exe,
         })
         .await?;
         assert_no_errors(&compile);
@@ -492,6 +550,72 @@ export function main(): bigint {
     .expect("ok");
 }
 
+#[test]
+fn build_emit_obj_and_ir() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .expect("tokio runtime");
+
+    rt.block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let entry = dir.path().join("main.ts");
+        write_file(
+            &entry,
+            r#"
+export function main(): number {
+  return 0;
+}
+"#,
+        )
+        .expect("write");
+
+        let out_dir = tempfile::tempdir().map_err(|e| TszError::Io {
+            path: PathBuf::from("<tempdir>"),
+            source: e,
+        })?;
+
+        let mut obj_path = out_dir.path().join("tsz_emit");
+        if cfg!(windows) {
+            obj_path.set_extension("obj");
+        } else {
+            obj_path.set_extension("o");
+        }
+
+        let obj_compile = build_executable(BuildOptions {
+            entry: entry.clone(),
+            output: obj_path.clone(),
+            opt_level: OptLevel::None,
+            max_errors: MAX_ERRORS,
+            emit: EmitKind::Obj,
+        })
+        .await?;
+        assert_no_errors(&obj_compile);
+        let obj_meta = std::fs::metadata(&obj_path).map_err(|e| TszError::Io {
+            path: obj_path.clone(),
+            source: e,
+        })?;
+        assert!(obj_meta.len() > 0, "expected object output");
+
+        let ir_path = out_dir.path().join("tsz_emit.clif");
+        let ir_compile = build_executable(BuildOptions {
+            entry,
+            output: ir_path.clone(),
+            opt_level: OptLevel::None,
+            max_errors: MAX_ERRORS,
+            emit: EmitKind::Ir,
+        })
+        .await?;
+        assert_no_errors(&ir_compile);
+        let ir = std::fs::read_to_string(&ir_path).map_err(|e| TszError::Io {
+            path: ir_path.clone(),
+            source: e,
+        })?;
+        assert!(!ir.is_empty(), "expected IR output");
+        Ok::<(), TszError>(())
+    })
+    .expect("ok");
+}
 #[test]
 fn build_and_run_let_locals_stdout() {
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -527,6 +651,7 @@ export function main(): bigint {
             output: output.clone(),
             opt_level: OptLevel::None,
             max_errors: MAX_ERRORS,
+            emit: EmitKind::Exe,
         })
         .await?;
         assert_no_errors(&compile);
@@ -637,6 +762,7 @@ export function main(): bigint {
             output: output.clone(),
             opt_level: OptLevel::None,
             max_errors: MAX_ERRORS,
+            emit: EmitKind::Exe,
         })
         .await?;
         assert_no_errors(&compile);
@@ -775,6 +901,7 @@ export function main(): void {
             output,
             opt_level: OptLevel::None,
             max_errors: MAX_ERRORS,
+            emit: EmitKind::Exe,
         })
         .await?;
 
@@ -850,6 +977,7 @@ export function main(): void {
             output,
             opt_level: OptLevel::None,
             max_errors: MAX_ERRORS,
+            emit: EmitKind::Exe,
         })
         .await?;
 
@@ -890,6 +1018,7 @@ export function main(): bigint {
             output,
             opt_level: OptLevel::None,
             max_errors: MAX_ERRORS,
+            emit: EmitKind::Exe,
         })
         .await?;
 
@@ -934,6 +1063,7 @@ export function main(): bigint {
             output: output.clone(),
             opt_level: OptLevel::None,
             max_errors: MAX_ERRORS,
+            emit: EmitKind::Exe,
         })
         .await?;
         assert_no_errors(&compile);
@@ -1018,6 +1148,7 @@ export function main(): bigint {
             output,
             opt_level: OptLevel::None,
             max_errors: MAX_ERRORS,
+            emit: EmitKind::Exe,
         })
         .await?;
 
@@ -1060,6 +1191,7 @@ export function main(): bigint {
             output,
             opt_level: OptLevel::None,
             max_errors: MAX_ERRORS,
+            emit: EmitKind::Exe,
         })
         .await?;
         assert_has_error(&output, "Cannot assign to const variable");
@@ -1104,6 +1236,7 @@ export function main(): bigint {
             output,
             opt_level: OptLevel::None,
             max_errors: MAX_ERRORS,
+            emit: EmitKind::Exe,
         })
         .await?;
 

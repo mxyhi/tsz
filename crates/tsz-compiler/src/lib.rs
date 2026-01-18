@@ -47,12 +47,21 @@ pub struct BuildOptions {
     pub output: PathBuf,
     pub opt_level: OptLevel,
     pub max_errors: usize,
+    pub emit: EmitKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptLevel {
     None,
     Speed,
+    Size,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmitKind {
+    Exe,
+    Obj,
+    Ir,
 }
 
 pub async fn build_executable(options: BuildOptions) -> Result<CompileOutput, TszError> {
@@ -66,29 +75,58 @@ pub async fn build_executable(options: BuildOptions) -> Result<CompileOutput, Ts
             sources,
         });
     }
-    let object_bytes = codegen::emit_object(&hir, options.opt_level)?;
 
-    let object_path = default_object_path(&options.output);
-    tokio::fs::write(&object_path, object_bytes)
-        .await
-        .map_err(|e| TszError::Io {
-            path: object_path.clone(),
-            source: e,
-        })?;
-
-    linker::link_executable(&object_path, &options.output).await?;
+    match options.emit {
+        EmitKind::Exe => {
+            let object_bytes = codegen::emit_object(&hir, options.opt_level)?;
+            let temp_dir = tempfile::tempdir().map_err(|e| TszError::Io {
+                path: PathBuf::from("<tempdir>"),
+                source: e,
+            })?;
+            let object_path = temp_object_path(&temp_dir, &options.output);
+            tokio::fs::write(&object_path, object_bytes)
+                .await
+                .map_err(|e| TszError::Io {
+                    path: object_path.clone(),
+                    source: e,
+                })?;
+            linker::link_executable(&object_path, &options.output).await?;
+        }
+        EmitKind::Obj => {
+            let object_bytes = codegen::emit_object(&hir, options.opt_level)?;
+            tokio::fs::write(&options.output, object_bytes)
+                .await
+                .map_err(|e| TszError::Io {
+                    path: options.output.clone(),
+                    source: e,
+                })?;
+        }
+        EmitKind::Ir => {
+            let ir = codegen::emit_ir(&hir, options.opt_level)?;
+            tokio::fs::write(&options.output, ir)
+                .await
+                .map_err(|e| TszError::Io {
+                    path: options.output.clone(),
+                    source: e,
+                })?;
+        }
+    }
     Ok(CompileOutput {
         diagnostics: diags,
         sources,
     })
 }
 
-fn default_object_path(output_exe: &Path) -> PathBuf {
-    let mut p = output_exe.to_path_buf();
+fn temp_object_path(temp_dir: &tempfile::TempDir, output_exe: &Path) -> PathBuf {
+    let name = output_exe
+        .file_name()
+        .map(|s| s.to_os_string())
+        .unwrap_or_else(|| "a.out".into());
+    let mut p = PathBuf::from(name);
     if cfg!(windows) {
         p.set_extension("obj");
     } else {
         p.set_extension("o");
     }
-    p
+    temp_dir.path().join(p)
 }

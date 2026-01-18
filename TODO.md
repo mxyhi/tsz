@@ -57,19 +57,19 @@
 - [x] CLI：`tsz build` / `tsz run`（支持 `--opt none|speed`）
 - [x] CLI：`tsz check`（只做解析 + 类型检查，不生成/链接）
 
-- [ ] 诊断（Diagnostics）
-  - [ ] Span → 行/列 + 源码片段高亮（类似 rustc）
-  - [ ] 多错误收集（尽量一次报告多个错误点）
+- [x] 诊断（Diagnostics）
+  - [x] Span → 行/列 + 源码片段高亮（类似 rustc）
+  - [x] 多错误收集（尽量一次报告多个错误点）
 
-- [ ] 构建产物
-  - [ ] 产物管理：临时 `.o/.obj` 清理策略（避免污染输出目录）
-  - [ ] 可选：`--emit obj` / `--emit ir`（调试/排障）
+- [x] 构建产物
+  - [x] 产物管理：临时 `.o/.obj` 清理策略（避免污染输出目录）
+  - [x] 可选：`--emit obj` / `--emit ir`（调试/排障）
 
 ## 性能
 
-- [ ] 基准测试（compile time + runtime）与性能预算
-- [ ] 并行模块加载/解析（在保证确定性的前提下）
-- [ ] 更细粒度 OptLevel（例如 size；若确有收益）
+- [x] 基准测试（compile time + runtime）与性能预算
+- [x] 并行模块加载/解析（在保证确定性的前提下）
+- [x] 更细粒度 OptLevel（例如 size；若确有收益）
 
 ## 运行时与生态（方向已定）
 

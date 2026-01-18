@@ -111,6 +111,10 @@ impl Diagnostics {
     pub fn error_count(&self) -> usize {
         self.error_count
     }
+
+    pub fn max_errors(&self) -> usize {
+        self.max_errors
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -221,6 +225,7 @@ pub fn render_diagnostics(diags: &Diagnostics, sources: &SourceMap) -> String {
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (None, None) => std::cmp::Ordering::Equal,
         }
+        .then_with(|| a.message.cmp(&b.message))
     });
 
     let mut out = String::new();
