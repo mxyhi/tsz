@@ -108,6 +108,9 @@ pub(super) fn codegen_expr(
                 args,
             )
         }
+        HirExpr::Error { .. } => Err(TszError::Codegen {
+            message: "Codegen encountered error expression (internal error)".to_string(),
+        }),
     }
 }
 
@@ -187,6 +190,9 @@ fn codegen_call(
             message: "A void function cannot be used as an expression value".to_string(),
         }),
         Type::BigInt | Type::Number | Type::Bool | Type::String => Ok(builder.inst_results(call)[0]),
+        Type::Error => Err(TszError::Codegen {
+            message: "Cannot codegen call with error type".to_string(),
+        }),
     }
 }
 
@@ -233,5 +239,6 @@ pub(super) fn hir_expr_type(program: &HirProgram, func: &crate::HirFunction, exp
                 message: "callee HIR out of bounds (internal error)".to_string(),
             })?
             .return_type,
+        HirExpr::Error { .. } => Type::Error,
     })
 }

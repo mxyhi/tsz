@@ -1,66 +1,109 @@
+use crate::diagnostics::Diagnostics;
 use crate::lexer::{Token, TokenKind};
-use crate::{ast::*, lexer, Span, TszError};
-use std::path::Path;
+use crate::{ast::*, lexer, Span};
+use std::path::{Path, PathBuf};
 
+mod expr;
 mod stmt;
 
-pub fn parse_module(path: &Path, source: &str) -> Result<Module, TszError> {
-    let tokens = lexer::lex(source)?;
-    let mut p = Parser::new(source, tokens);
+pub fn parse_module(path: &Path, source: &str, diags: &mut Diagnostics) -> Module {
+    let tokens = lexer::lex(source, path, diags);
+    let mut p = Parser::new(path, source, tokens, diags);
     let mut imports = Vec::new();
     let mut functions = Vec::new();
+
     while !p.is_eof() {
+        let start_idx = p.idx;
         match p.peek().kind {
-            TokenKind::KwImport => imports.push(p.parse_import()?),
-            _ => functions.push(p.parse_function()?),
+            TokenKind::KwImport => {
+                if let Some(import) = p.parse_import() {
+                    imports.push(import);
+                } else {
+                    p.sync_toplevel();
+                }
+            }
+            TokenKind::KwExport | TokenKind::KwFunction => {
+                if let Some(func) = p.parse_function() {
+                    functions.push(func);
+                } else {
+                    p.sync_toplevel();
+                }
+            }
+            TokenKind::Eof => break,
+            _ => {
+                let span = p.peek().span;
+                p.error_at(span, "Expected import or function declaration");
+                p.bump();
+            }
+        }
+
+        if p.idx == start_idx {
+            // Ensure forward progress even if a handler forgot to consume.
+            p.bump();
         }
     }
-    Ok(Module {
+
+    Module {
         path: path.to_path_buf(),
         imports,
         functions,
-    })
+    }
 }
 
-struct Parser<'a> {
+struct Parser<'a, 'd> {
+    path: PathBuf,
     source: &'a str,
     tokens: Vec<Token>,
     idx: usize,
+    diags: &'d mut Diagnostics,
 }
 
-impl<'a> Parser<'a> {
-    fn new(source: &'a str, tokens: Vec<Token>) -> Self {
-        Self { source, tokens, idx: 0 }
+impl<'a, 'd> Parser<'a, 'd> {
+    fn new(path: &Path, source: &'a str, tokens: Vec<Token>, diags: &'d mut Diagnostics) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            source,
+            tokens,
+            idx: 0,
+            diags,
+        }
     }
 
     fn is_eof(&self) -> bool {
         self.peek().kind == TokenKind::Eof
     }
 
-    fn parse_function(&mut self) -> Result<FunctionDecl, TszError> {
+    fn parse_function(&mut self) -> Option<FunctionDecl> {
         let start_span = self.peek().span;
         let is_export = self.eat(TokenKind::KwExport);
-        self.expect(TokenKind::KwFunction)?;
+        let (_kw_fn, ok_fn) = self.expect_kind(TokenKind::KwFunction);
+        if !ok_fn {
+            return None;
+        }
 
-        let name_tok = self.expect(TokenKind::Ident)?;
-        let name = self.slice(name_tok.span).to_string();
+        let (name_tok, name_ok) = self.expect_ident();
+        let name = if name_ok {
+            self.slice(name_tok.span).to_string()
+        } else {
+            "<error>".to_string()
+        };
 
-        self.expect(TokenKind::LParen)?;
-        let params = self.parse_param_list()?;
-        self.expect(TokenKind::RParen)?;
+        self.expect(TokenKind::LParen);
+        let params = self.parse_param_list();
+        self.expect(TokenKind::RParen);
 
-        self.expect(TokenKind::Colon)?;
-        let return_type = self.parse_type()?;
+        self.expect(TokenKind::Colon);
+        let return_type = self.parse_type();
 
-        self.expect(TokenKind::LBrace)?;
+        self.expect(TokenKind::LBrace);
         let mut body = Vec::new();
         while self.peek().kind != TokenKind::RBrace && !self.is_eof() {
-            body.push(self.parse_stmt()?);
+            body.push(self.parse_stmt());
         }
-        self.expect(TokenKind::RBrace)?;
+        self.expect(TokenKind::RBrace);
 
         let end_span = self.prev_span();
-        Ok(FunctionDecl {
+        Some(FunctionDecl {
             is_export,
             name,
             params,
@@ -73,20 +116,24 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_param_list(&mut self) -> Result<Vec<ParamDecl>, TszError> {
+    fn parse_param_list(&mut self) -> Vec<ParamDecl> {
         let mut params = Vec::new();
         if self.peek().kind == TokenKind::RParen {
-            return Ok(params);
+            return params;
         }
 
         loop {
             let start = self.peek().span;
-            let name_tok = self.expect(TokenKind::Ident)?;
+            let (name_tok, name_ok) = self.expect_ident();
             let name_span = name_tok.span;
-            let name = self.slice(name_tok.span).to_string();
+            let name = if name_ok {
+                self.slice(name_tok.span).to_string()
+            } else {
+                "<error>".to_string()
+            };
 
-            self.expect(TokenKind::Colon)?;
-            let ty = self.parse_type()?;
+            self.expect(TokenKind::Colon);
+            let ty = self.parse_type();
             let end = self.prev_span();
 
             params.push(ParamDecl {
@@ -101,20 +148,18 @@ impl<'a> Parser<'a> {
 
             if self.eat(TokenKind::Comma) {
                 if self.peek().kind == TokenKind::RParen {
-                    return Err(TszError::Parse {
-                        message: "Trailing comma in parameter list is not supported".to_string(),
-                        span: self.peek().span,
-                    });
+                    self.error_at(self.peek().span, "Trailing comma in parameter list is not supported");
+                    return params;
                 }
                 continue;
             }
             break;
         }
 
-        Ok(params)
+        params
     }
 
-    fn parse_stmt(&mut self) -> Result<Stmt, TszError> {
+    fn parse_stmt(&mut self) -> Stmt {
         match self.peek().kind {
             TokenKind::KwReturn => self.parse_return_stmt(),
             TokenKind::KwLet => self.parse_let_stmt(),
@@ -133,32 +178,46 @@ impl<'a> Parser<'a> {
                     self.parse_assign_stmt()
                 }
             }
-            _ => Err(TszError::Parse {
-                message:
-                    "Only block/if/while/for/break/continue/let/const/<name> = <expr>/console.log(...)/return statements are supported"
-                        .to_string(),
-                span: self.peek().span,
-            }),
+            TokenKind::Error => {
+                let span = self.bump().span;
+                Stmt::Error { span }
+            }
+            _ => {
+                let start = self.peek().span;
+                self.error_at(start, "Only block/if/while/for/break/continue/let/const/<name> = <expr>/console.log(...)/return statements are supported");
+                self.sync_stmt();
+                let end = self.prev_span();
+                Stmt::Error {
+                    span: Span {
+                        start: start.start,
+                        end: end.end,
+                    },
+                }
+            }
         }
     }
 
-    fn parse_let_stmt(&mut self) -> Result<Stmt, TszError> {
-        let start = self.expect(TokenKind::KwLet)?.span;
-        let name_tok = self.expect(TokenKind::Ident)?;
+    fn parse_let_stmt(&mut self) -> Stmt {
+        let start = self.expect(TokenKind::KwLet).span;
+        let (name_tok, name_ok) = self.expect_ident();
         let name_span = name_tok.span;
-        let name = self.slice(name_tok.span).to_string();
+        let name = if name_ok {
+            self.slice(name_tok.span).to_string()
+        } else {
+            "<error>".to_string()
+        };
 
         let annotated_type = if self.eat(TokenKind::Colon) {
-            Some(self.parse_type()?)
+            Some(self.parse_type())
         } else {
             None
         };
 
-        self.expect(TokenKind::Equal)?;
-        let expr = self.parse_expr()?;
-        let semi = self.expect(TokenKind::Semicolon)?.span;
+        self.expect(TokenKind::Equal);
+        let expr = self.parse_expr();
+        let semi = self.expect(TokenKind::Semicolon).span;
 
-        Ok(Stmt::Let {
+        Stmt::Let {
             name,
             name_span,
             annotated_type,
@@ -167,26 +226,30 @@ impl<'a> Parser<'a> {
                 start: start.start,
                 end: semi.end,
             },
-        })
+        }
     }
 
-    fn parse_const_stmt(&mut self) -> Result<Stmt, TszError> {
-        let start = self.expect(TokenKind::KwConst)?.span;
-        let name_tok = self.expect(TokenKind::Ident)?;
+    fn parse_const_stmt(&mut self) -> Stmt {
+        let start = self.expect(TokenKind::KwConst).span;
+        let (name_tok, name_ok) = self.expect_ident();
         let name_span = name_tok.span;
-        let name = self.slice(name_tok.span).to_string();
+        let name = if name_ok {
+            self.slice(name_tok.span).to_string()
+        } else {
+            "<error>".to_string()
+        };
 
         let annotated_type = if self.eat(TokenKind::Colon) {
-            Some(self.parse_type()?)
+            Some(self.parse_type())
         } else {
             None
         };
 
-        self.expect(TokenKind::Equal)?;
-        let expr = self.parse_expr()?;
-        let semi = self.expect(TokenKind::Semicolon)?.span;
+        self.expect(TokenKind::Equal);
+        let expr = self.parse_expr();
+        let semi = self.expect(TokenKind::Semicolon).span;
 
-        Ok(Stmt::Const {
+        Stmt::Const {
             name,
             name_span,
             annotated_type,
@@ -195,39 +258,49 @@ impl<'a> Parser<'a> {
                 start: start.start,
                 end: semi.end,
             },
-        })
+        }
     }
 
-    fn parse_import(&mut self) -> Result<ImportDecl, TszError> {
-        let start = self.expect(TokenKind::KwImport)?.span;
-        self.expect(TokenKind::LBrace)?;
+    fn parse_import(&mut self) -> Option<ImportDecl> {
+        let start = self.expect(TokenKind::KwImport).span;
+        self.expect(TokenKind::LBrace);
 
         let mut names = Vec::new();
         if self.peek().kind == TokenKind::RBrace {
-            return Err(TszError::Parse {
-                message: "Import list cannot be empty".to_string(),
-                span: self.peek().span,
-            });
+            self.error_at(self.peek().span, "Import list cannot be empty");
+            self.sync_stmt();
+            return None;
         }
         loop {
-            let ident = self.expect(TokenKind::Ident)?;
-            names.push(ImportName {
-                name: self.slice(ident.span).to_string(),
-                span: ident.span,
-            });
+            let (ident, ok) = self.expect_ident();
+            let name = if ok {
+                self.slice(ident.span).to_string()
+            } else {
+                "<error>".to_string()
+            };
+            names.push(ImportName { name, span: ident.span });
             if self.eat(TokenKind::Comma) {
                 continue;
             }
             break;
         }
 
-        self.expect(TokenKind::RBrace)?;
-        self.expect(TokenKind::KwFrom)?;
-        let from_tok = self.expect(TokenKind::String)?;
-        let from = self.parse_string_value(from_tok)?;
-        let semi = self.expect(TokenKind::Semicolon)?.span;
+        self.expect(TokenKind::RBrace);
+        self.expect(TokenKind::KwFrom);
+        let (from_tok, from_ok) = self.expect_string();
+        let from = if from_ok {
+            self.parse_string_value(from_tok)
+        } else {
+            String::new()
+        };
+        let semi = self.expect(TokenKind::Semicolon).span;
 
-        Ok(ImportDecl {
+        if from.is_empty() {
+            self.error_at(from_tok.span, "Import source must be a string literal");
+            return None;
+        }
+
+        Some(ImportDecl {
             names,
             from,
             resolved_path: None,
@@ -238,338 +311,63 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_type(&mut self) -> Result<Type, TszError> {
-        let tok = self.expect(TokenKind::Ident)?;
+    fn parse_type(&mut self) -> Type {
+        let (tok, ok) = self.expect_ident();
+        if !ok {
+            return Type::Error;
+        }
         let s = self.slice(tok.span);
         match s {
-            "number" => Ok(Type::Number),
-            "bigint" => Ok(Type::BigInt),
-            "void" => Ok(Type::Void),
-            "boolean" => Ok(Type::Bool),
-            "string" => Ok(Type::String),
-            _ => Err(TszError::Parse {
-                message: format!("Unsupported type: {s}"),
-                span: tok.span,
-            }),
+            "number" => Type::Number,
+            "bigint" => Type::BigInt,
+            "void" => Type::Void,
+            "boolean" => Type::Bool,
+            "string" => Type::String,
+            _ => {
+                self.error_at(tok.span, format!("Unsupported type: {s}"));
+                Type::Error
+            }
         }
     }
 
-    fn parse_return_stmt(&mut self) -> Result<Stmt, TszError> {
-        let start = self.expect(TokenKind::KwReturn)?.span;
+    fn parse_return_stmt(&mut self) -> Stmt {
+        let start = self.expect(TokenKind::KwReturn).span;
         if self.peek().kind == TokenKind::Semicolon {
             let semi = self.bump().span;
-            return Ok(Stmt::Return {
+            return Stmt::Return {
                 expr: None,
                 span: Span {
                     start: start.start,
                     end: semi.end,
                 },
-            });
+            };
         }
 
-        let expr = self.parse_expr()?;
-        let semi = self.expect(TokenKind::Semicolon)?.span;
-        Ok(Stmt::Return {
+        let expr = self.parse_expr();
+        let semi = self.expect(TokenKind::Semicolon).span;
+        Stmt::Return {
             expr: Some(expr),
             span: Span {
                 start: start.start,
                 end: semi.end,
             },
-        })
-    }
-
-    fn parse_expr(&mut self) -> Result<Expr, TszError> {
-        self.parse_logical_or_expr()
-    }
-
-    // Expression parsing (small TS subset):
-    // - primary: literals / identifiers / calls / parenthesized expressions
-    // - unary: -<expr> / !<expr>
-    // - multiplicative: * /
-    // - additive: + -
-    // - relational: < <= > >=
-    // - equality: == !=
-    // - logical and: &&
-    // - logical or: ||
-    fn parse_logical_or_expr(&mut self) -> Result<Expr, TszError> {
-        let mut expr = self.parse_logical_and_expr()?;
-        loop {
-            if self.peek().kind != TokenKind::OrOr {
-                break;
-            }
-            self.bump();
-            let rhs = self.parse_logical_and_expr()?;
-            let span = Span {
-                start: expr_span(&expr).start,
-                end: expr_span(&rhs).end,
-            };
-            expr = Expr::Binary {
-                op: BinaryOp::Or,
-                left: Box::new(expr),
-                right: Box::new(rhs),
-                span,
-            };
-        }
-        Ok(expr)
-    }
-
-    fn parse_logical_and_expr(&mut self) -> Result<Expr, TszError> {
-        let mut expr = self.parse_equality_expr()?;
-        loop {
-            if self.peek().kind != TokenKind::AndAnd {
-                break;
-            }
-            self.bump();
-            let rhs = self.parse_equality_expr()?;
-            let span = Span {
-                start: expr_span(&expr).start,
-                end: expr_span(&rhs).end,
-            };
-            expr = Expr::Binary {
-                op: BinaryOp::And,
-                left: Box::new(expr),
-                right: Box::new(rhs),
-                span,
-            };
-        }
-        Ok(expr)
-    }
-
-    fn parse_equality_expr(&mut self) -> Result<Expr, TszError> {
-        let mut expr = self.parse_relational_expr()?;
-        loop {
-            let op = match self.peek().kind {
-                TokenKind::EqualEqual => Some(BinaryOp::Eq),
-                TokenKind::BangEqual => Some(BinaryOp::Ne),
-                _ => None,
-            };
-            let Some(op) = op else { break };
-            self.bump();
-            let rhs = self.parse_relational_expr()?;
-            let span = Span {
-                start: expr_span(&expr).start,
-                end: expr_span(&rhs).end,
-            };
-            expr = Expr::Binary {
-                op,
-                left: Box::new(expr),
-                right: Box::new(rhs),
-                span,
-            };
-        }
-        Ok(expr)
-    }
-
-    fn parse_relational_expr(&mut self) -> Result<Expr, TszError> {
-        let mut expr = self.parse_additive_expr()?;
-        loop {
-            let op = match self.peek().kind {
-                TokenKind::Less => Some(BinaryOp::Lt),
-                TokenKind::LessEqual => Some(BinaryOp::Le),
-                TokenKind::Greater => Some(BinaryOp::Gt),
-                TokenKind::GreaterEqual => Some(BinaryOp::Ge),
-                _ => None,
-            };
-            let Some(op) = op else { break };
-            self.bump();
-            let rhs = self.parse_additive_expr()?;
-            let span = Span {
-                start: expr_span(&expr).start,
-                end: expr_span(&rhs).end,
-            };
-            expr = Expr::Binary {
-                op,
-                left: Box::new(expr),
-                right: Box::new(rhs),
-                span,
-            };
-        }
-        Ok(expr)
-    }
-
-    fn parse_additive_expr(&mut self) -> Result<Expr, TszError> {
-        let mut expr = self.parse_multiplicative_expr()?;
-        loop {
-            let op = match self.peek().kind {
-                TokenKind::Plus => Some(BinaryOp::Add),
-                TokenKind::Minus => Some(BinaryOp::Sub),
-                _ => None,
-            };
-            let Some(op) = op else { break };
-            self.bump(); // operator
-            let rhs = self.parse_multiplicative_expr()?;
-            let span = Span {
-                start: expr_span(&expr).start,
-                end: expr_span(&rhs).end,
-            };
-            expr = Expr::Binary {
-                op,
-                left: Box::new(expr),
-                right: Box::new(rhs),
-                span,
-            };
-        }
-        Ok(expr)
-    }
-
-    fn parse_multiplicative_expr(&mut self) -> Result<Expr, TszError> {
-        let mut expr = self.parse_unary_expr()?;
-        loop {
-            let op = match self.peek().kind {
-                TokenKind::Star => Some(BinaryOp::Mul),
-                TokenKind::Slash => Some(BinaryOp::Div),
-                _ => None,
-            };
-            let Some(op) = op else { break };
-            self.bump(); // operator
-            let rhs = self.parse_unary_expr()?;
-            let span = Span {
-                start: expr_span(&expr).start,
-                end: expr_span(&rhs).end,
-            };
-            expr = Expr::Binary {
-                op,
-                left: Box::new(expr),
-                right: Box::new(rhs),
-                span,
-            };
-        }
-        Ok(expr)
-    }
-
-    fn parse_unary_expr(&mut self) -> Result<Expr, TszError> {
-        if self.eat(TokenKind::Minus) {
-            let minus_span = self.prev_span();
-            let expr = self.parse_unary_expr()?;
-            let span = Span {
-                start: minus_span.start,
-                end: expr_span(&expr).end,
-            };
-            return Ok(Expr::UnaryMinus {
-                expr: Box::new(expr),
-                span,
-            });
-        }
-        if self.eat(TokenKind::Bang) {
-            let bang_span = self.prev_span();
-            let expr = self.parse_unary_expr()?;
-            let span = Span {
-                start: bang_span.start,
-                end: expr_span(&expr).end,
-            };
-            return Ok(Expr::UnaryNot {
-                expr: Box::new(expr),
-                span,
-            });
-        }
-        self.parse_primary_expr()
-    }
-
-    fn parse_primary_expr(&mut self) -> Result<Expr, TszError> {
-        let tok = self.peek();
-        match tok.kind {
-            TokenKind::Number => {
-                let tok = self.bump();
-                let s = self.slice(tok.span);
-                let v: f64 = s.parse().map_err(|_| TszError::Parse {
-                    message: format!("Invalid number literal: {s}"),
-                    span: tok.span,
-                })?;
-                Ok(Expr::Number { value: v, span: tok.span })
-            }
-            TokenKind::BigInt => {
-                let tok = self.bump();
-                let raw = self.slice(tok.span);
-                let s = raw.strip_suffix('n').unwrap_or(raw);
-                let v: i64 = s.parse().map_err(|_| TszError::Parse {
-                    message: format!("Invalid bigint literal: {raw}"),
-                    span: tok.span,
-                })?;
-                Ok(Expr::BigInt { value: v, span: tok.span })
-            }
-            TokenKind::String => {
-                let tok = self.bump();
-                let v = self.parse_string_value(tok)?;
-                Ok(Expr::String { value: v, span: tok.span })
-            }
-            TokenKind::Ident => {
-                let ident = self.bump();
-                let name = self.slice(ident.span).to_string();
-                if name == "true" || name == "false" {
-                    return Ok(Expr::Bool {
-                        value: name == "true",
-                        span: ident.span,
-                    });
-                }
-                if self.eat(TokenKind::LParen) {
-                    let mut args = Vec::new();
-                    if self.peek().kind != TokenKind::RParen {
-                        loop {
-                            args.push(self.parse_expr()?);
-                            if self.eat(TokenKind::Comma) {
-                                if self.peek().kind == TokenKind::RParen {
-                                    return Err(TszError::Parse {
-                                        message: "Trailing comma in call arguments is not supported".to_string(),
-                                        span: self.peek().span,
-                                    });
-                                }
-                                continue;
-                            }
-                            break;
-                        }
-                    }
-                    let rparen = self.expect(TokenKind::RParen)?.span;
-                    Ok(Expr::Call {
-                        callee: name,
-                        args,
-                        span: Span {
-                            start: ident.span.start,
-                            end: rparen.end,
-                        },
-                    })
-                } else {
-                    Ok(Expr::Ident { name, span: ident.span })
-                }
-            }
-            TokenKind::LParen => {
-                self.bump();
-                let expr = self.parse_expr()?;
-                self.expect(TokenKind::RParen)?;
-                Ok(expr)
-            }
-            _ => Err(TszError::Parse {
-                message: "Expected expression".to_string(),
-                span: tok.span,
-            }),
         }
     }
 
-    fn parse_string_value(&self, tok: Token) -> Result<String, TszError> {
+    fn parse_string_value(&self, tok: Token) -> String {
         let raw = self.slice(tok.span);
         let bytes = raw.as_bytes();
         if bytes.len() < 2 {
-            return Err(TszError::Parse {
-                message: "Invalid string literal".to_string(),
-                span: tok.span,
-            });
+            return String::new();
         }
         let quote = bytes[0];
         if quote != b'"' && quote != b'\'' {
-            return Err(TszError::Parse {
-                message: "Invalid string literal (missing quotes)".to_string(),
-                span: tok.span,
-            });
+            return String::new();
         }
         if bytes[bytes.len() - 1] != quote {
-            return Err(TszError::Parse {
-                message: "Invalid string literal (missing closing quote)".to_string(),
-                span: tok.span,
-            });
+            return String::new();
         }
-        String::from_utf8(bytes[1..bytes.len() - 1].to_vec()).map_err(|_| TszError::Parse {
-            message: "String literal is not valid UTF-8".to_string(),
-            span: tok.span,
-        })
+        String::from_utf8(bytes[1..bytes.len() - 1].to_vec()).unwrap_or_default()
     }
 
     fn peek(&self) -> Token {
@@ -590,15 +388,28 @@ impl<'a> Parser<'a> {
         t
     }
 
-    fn expect(&mut self, kind: TokenKind) -> Result<Token, TszError> {
+    fn expect(&mut self, kind: TokenKind) -> Token {
+        let (tok, _ok) = self.expect_kind(kind);
+        tok
+    }
+
+    fn expect_ident(&mut self) -> (Token, bool) {
+        self.expect_kind(TokenKind::Ident)
+    }
+
+    fn expect_string(&mut self) -> (Token, bool) {
+        self.expect_kind(TokenKind::String)
+    }
+
+    fn expect_kind(&mut self, kind: TokenKind) -> (Token, bool) {
         let t = self.peek();
         if t.kind == kind {
-            Ok(self.bump())
+            (self.bump(), true)
         } else {
-            Err(TszError::Parse {
-                message: format!("Expected {kind:?}, got {got:?}", got = t.kind),
-                span: t.span,
-            })
+            if t.kind != TokenKind::Error {
+                self.error_at(t.span, format!("Expected {kind:?}, got {got:?}", got = t.kind));
+            }
+            (self.bump(), false)
         }
     }
 
@@ -621,19 +432,35 @@ impl<'a> Parser<'a> {
             .map(|t| t.span)
             .unwrap_or(Span { start: 0, end: 0 })
     }
-}
 
-fn expr_span(expr: &Expr) -> Span {
-    match expr {
-        Expr::Number { span, .. }
-        | Expr::BigInt { span, .. }
-        | Expr::Bool { span, .. }
-        | Expr::String { span, .. } => *span,
-        Expr::Ident { span, .. } => *span,
-        Expr::UnaryMinus { span, .. } => *span,
-        Expr::UnaryNot { span, .. } => *span,
-        Expr::Call { span, .. } => *span,
-        Expr::Binary { span, .. } => *span,
+    fn error_at(&mut self, span: Span, message: impl Into<String>) {
+        self.diags.error_at(&self.path, span, message);
+    }
+
+    fn sync_stmt(&mut self) {
+        while !self.is_eof() {
+            match self.peek().kind {
+                TokenKind::Semicolon => {
+                    self.bump();
+                    break;
+                }
+                TokenKind::RBrace => break,
+                _ => {
+                    self.bump();
+                }
+            }
+        }
+    }
+
+    fn sync_toplevel(&mut self) {
+        while !self.is_eof() {
+            match self.peek().kind {
+                TokenKind::KwImport | TokenKind::KwFunction | TokenKind::KwExport => break,
+                _ => {
+                    self.bump();
+                }
+            }
+        }
     }
 }
 

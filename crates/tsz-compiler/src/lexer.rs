@@ -1,4 +1,6 @@
-use crate::{Span, TszError};
+use crate::diagnostics::Diagnostics;
+use crate::Span;
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
@@ -45,6 +47,7 @@ pub enum TokenKind {
     Minus,
     Star,
     Slash,
+    Error,
     Eof,
 }
 
@@ -54,46 +57,50 @@ pub struct Token {
     pub span: Span,
 }
 
-pub fn lex(source: &str) -> Result<Vec<Token>, TszError> {
-    let mut lexer = Lexer::new(source);
+pub fn lex(source: &str, path: &Path, diags: &mut Diagnostics) -> Vec<Token> {
+    let mut lexer = Lexer::new(source, path, diags);
     let mut tokens = Vec::new();
     loop {
-        let t = lexer.next_token()?;
+        let t = lexer.next_token();
         let is_eof = t.kind == TokenKind::Eof;
         tokens.push(t);
         if is_eof {
             break;
         }
     }
-    Ok(tokens)
+    tokens
 }
 
-struct Lexer<'a> {
+struct Lexer<'a, 'd> {
     src: &'a [u8],
     pos: usize,
+    diags: &'d mut Diagnostics,
+    path: std::path::PathBuf,
 }
 
-impl<'a> Lexer<'a> {
-    fn new(source: &'a str) -> Self {
+impl<'a, 'd> Lexer<'a, 'd> {
+    fn new(source: &'a str, path: &Path, diags: &'d mut Diagnostics) -> Self {
         Self {
             src: source.as_bytes(),
             pos: 0,
+            diags,
+            path: path.to_path_buf(),
         }
     }
 
-    fn next_token(&mut self) -> Result<Token, TszError> {
-        self.skip_ws_and_comments()?;
+    fn next_token(&mut self) -> Token {
+        self.skip_ws_and_comments();
         let start = self.pos;
-        let Some(b) = self.peek_byte() else { return Ok(self.eof_token()) };
-        let kind = self.lex_token_kind(start, b)?;
+        let Some(b) = self.peek_byte() else { return self.eof_token() };
+        let kind = self.lex_token_kind(start, b);
 
-        Ok(Token {
+        Token {
             kind,
             span: Span {
                 start,
                 end: self.pos,
             },
-        })
+        }
     }
 
     fn eof_token(&self) -> Token {
@@ -106,125 +113,118 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn lex_token_kind(&mut self, start: usize, b: u8) -> Result<TokenKind, TszError> {
+    fn lex_token_kind(&mut self, start: usize, b: u8) -> TokenKind {
         // 2-char operators must be handled before `lex_single_char`.
         match b {
             b'+' => {
                 if self.peek_byte_at(self.pos + 1) == Some(b'=') {
                     self.pos += 2;
-                    return Ok(TokenKind::PlusEqual);
+                    return TokenKind::PlusEqual;
                 }
                 self.pos += 1;
-                return Ok(TokenKind::Plus);
+                return TokenKind::Plus;
             }
             b'-' => {
                 if self.peek_byte_at(self.pos + 1) == Some(b'=') {
                     self.pos += 2;
-                    return Ok(TokenKind::MinusEqual);
+                    return TokenKind::MinusEqual;
                 }
                 self.pos += 1;
-                return Ok(TokenKind::Minus);
+                return TokenKind::Minus;
             }
             b'*' => {
                 if self.peek_byte_at(self.pos + 1) == Some(b'=') {
                     self.pos += 2;
-                    return Ok(TokenKind::StarEqual);
+                    return TokenKind::StarEqual;
                 }
                 self.pos += 1;
-                return Ok(TokenKind::Star);
+                return TokenKind::Star;
             }
             b'/' => {
                 if self.peek_byte_at(self.pos + 1) == Some(b'=') {
                     self.pos += 2;
-                    return Ok(TokenKind::SlashEqual);
+                    return TokenKind::SlashEqual;
                 }
                 self.pos += 1;
-                return Ok(TokenKind::Slash);
+                return TokenKind::Slash;
             }
             b'=' => {
                 if self.peek_byte_at(self.pos + 1) == Some(b'=') {
                     self.pos += 2;
-                    return Ok(TokenKind::EqualEqual);
+                    return TokenKind::EqualEqual;
                 }
                 self.pos += 1;
-                return Ok(TokenKind::Equal);
+                return TokenKind::Equal;
             }
             b'!' => {
                 if self.peek_byte_at(self.pos + 1) == Some(b'=') {
                     self.pos += 2;
-                    return Ok(TokenKind::BangEqual);
+                    return TokenKind::BangEqual;
                 }
                 self.pos += 1;
-                return Ok(TokenKind::Bang);
+                return TokenKind::Bang;
             }
             b'<' => {
                 if self.peek_byte_at(self.pos + 1) == Some(b'=') {
                     self.pos += 2;
-                    return Ok(TokenKind::LessEqual);
+                    return TokenKind::LessEqual;
                 }
                 self.pos += 1;
-                return Ok(TokenKind::Less);
+                return TokenKind::Less;
             }
             b'>' => {
                 if self.peek_byte_at(self.pos + 1) == Some(b'=') {
                     self.pos += 2;
-                    return Ok(TokenKind::GreaterEqual);
+                    return TokenKind::GreaterEqual;
                 }
                 self.pos += 1;
-                return Ok(TokenKind::Greater);
+                return TokenKind::Greater;
             }
             b'&' => {
                 if self.peek_byte_at(self.pos + 1) == Some(b'&') {
                     self.pos += 2;
-                    return Ok(TokenKind::AndAnd);
+                    return TokenKind::AndAnd;
                 }
-                return Err(TszError::Lex {
-                    message: "Unsupported character: '&'".to_string(),
-                    span: Span {
-                        start,
-                        end: start + 1,
-                    },
-                });
+                self.error_at(start, start + 1, "Unsupported character: '&'");
+                self.pos += 1;
+                return TokenKind::Error;
             }
             b'|' => {
                 if self.peek_byte_at(self.pos + 1) == Some(b'|') {
                     self.pos += 2;
-                    return Ok(TokenKind::OrOr);
+                    return TokenKind::OrOr;
                 }
-                return Err(TszError::Lex {
-                    message: "Unsupported character: '|'".to_string(),
-                    span: Span {
-                        start,
-                        end: start + 1,
-                    },
-                });
+                self.error_at(start, start + 1, "Unsupported character: '|'");
+                self.pos += 1;
+                return TokenKind::Error;
             }
             _ => {}
         }
 
         if let Some(kind) = lex_single_char(b) {
             self.pos += 1;
-            return Ok(kind);
+            return kind;
         }
 
         match b {
             b'"' | b'\'' => {
-                self.lex_string()?;
-                Ok(TokenKind::String)
+                if self.lex_string() {
+                    TokenKind::String
+                } else {
+                    TokenKind::Error
+                }
             }
             b'0'..=b'9' => self.lex_number_or_bigint(),
             b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'$' => self.lex_ident_or_keyword(),
-            _ => Err(TszError::Lex {
-                message: format!("Unsupported character: 0x{b:02X}"),
-                span: Span {
-                    start,
-                    end: start + 1,
-                },
-            }),
+            _ => {
+                self.error_at(start, start + 1, format!("Unsupported character: 0x{b:02X}"));
+                self.pos += 1;
+                TokenKind::Error
+            }
         }
     }
 
-    fn lex_ident_or_keyword(&mut self) -> Result<TokenKind, TszError> {
+    fn lex_ident_or_keyword(&mut self) -> TokenKind {
         let start = self.pos;
         self.pos += 1;
         while let Some(b) = self.peek_byte() {
@@ -234,15 +234,15 @@ impl<'a> Lexer<'a> {
                 break;
             }
         }
-        let s = std::str::from_utf8(&self.src[start..self.pos]).map_err(|_| TszError::Lex {
-            message: "Identifier is not valid UTF-8".to_string(),
-            span: Span {
-                start,
-                end: self.pos,
-            },
-        })?;
+        let s = match std::str::from_utf8(&self.src[start..self.pos]) {
+            Ok(s) => s,
+            Err(_) => {
+                self.error_at(start, self.pos, "Identifier is not valid UTF-8");
+                return TokenKind::Error;
+            }
+        };
 
-        Ok(match s {
+        match s {
             "export" => TokenKind::KwExport,
             "function" => TokenKind::KwFunction,
             "import" => TokenKind::KwImport,
@@ -257,10 +257,10 @@ impl<'a> Lexer<'a> {
             "break" => TokenKind::KwBreak,
             "continue" => TokenKind::KwContinue,
             _ => TokenKind::Ident,
-        })
+        }
     }
 
-    fn lex_number_or_bigint(&mut self) -> Result<TokenKind, TszError> {
+    fn lex_number_or_bigint(&mut self) -> TokenKind {
         let start = self.pos;
         self.pos += 1;
 
@@ -283,25 +283,21 @@ impl<'a> Lexer<'a> {
         if !is_float {
             if let Some(b'n') = self.peek_byte() {
                 self.pos += 1;
-                return Ok(TokenKind::BigInt);
+                return TokenKind::BigInt;
             }
         }
 
         // Scientific notation is not supported yet (keep the subset small/optimizable).
         if let Some(b'e' | b'E') = self.peek_byte() {
-            return Err(TszError::Lex {
-                message: "Scientific notation is not supported yet".to_string(),
-                span: Span {
-                    start,
-                    end: self.pos + 1,
-                },
-            });
+            self.error_at(start, self.pos + 1, "Scientific notation is not supported yet");
+            self.pos += 1;
+            return TokenKind::Error;
         }
 
-        Ok(TokenKind::Number)
+        TokenKind::Number
     }
 
-    fn lex_string(&mut self) -> Result<(), TszError> {
+    fn lex_string(&mut self) -> bool {
         let quote = self.peek_byte().expect("string start checked");
         let start = self.pos;
         self.pos += 1;
@@ -314,20 +310,15 @@ impl<'a> Lexer<'a> {
                         self.pos += 1;
                     }
                 }
-                _ if b == quote => return Ok(()),
+                _ if b == quote => return true,
                 _ => {}
             }
         }
-        Err(TszError::Lex {
-            message: "Unterminated string literal".to_string(),
-            span: Span {
-                start,
-                end: self.pos,
-            },
-        })
+        self.error_at(start, self.pos, "Unterminated string literal");
+        false
     }
 
-    fn skip_ws_and_comments(&mut self) -> Result<(), TszError> {
+    fn skip_ws_and_comments(&mut self) {
         loop {
             while let Some(b) = self.peek_byte() {
                 if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' {
@@ -361,13 +352,9 @@ impl<'a> Lexer<'a> {
                         }
                         (Some(_), _) => self.pos += 1,
                         (None, _) => {
-                            return Err(TszError::Lex {
-                                message: "Unterminated block comment (missing */)".to_string(),
-                                span: Span {
-                                    start,
-                                    end: self.pos,
-                                },
-                            });
+                            self.error_at(start, self.pos, "Unterminated block comment (missing */)");
+                            self.pos = self.src.len();
+                            return;
                         }
                     }
                 }
@@ -376,7 +363,6 @@ impl<'a> Lexer<'a> {
 
             break;
         }
-        Ok(())
     }
 
     #[inline]
@@ -387,6 +373,10 @@ impl<'a> Lexer<'a> {
     #[inline]
     fn peek_byte_at(&self, pos: usize) -> Option<u8> {
         self.src.get(pos).copied()
+    }
+
+    fn error_at(&mut self, start: usize, end: usize, message: impl Into<String>) {
+        self.diags.error_at(&self.path, Span { start, end }, message);
     }
 }
 

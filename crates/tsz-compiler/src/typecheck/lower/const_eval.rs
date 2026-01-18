@@ -24,7 +24,7 @@ pub(super) fn try_eval_const_value(expr: &HirExpr) -> Option<ConstValue> {
             ConstValue::Number(_) | ConstValue::BigInt(_) | ConstValue::String(_) => None,
         },
         HirExpr::Binary { op, left, right, .. } => eval_binary(*op, left, right),
-        HirExpr::Param { .. } | HirExpr::Local { .. } | HirExpr::Call { .. } => None,
+        HirExpr::Param { .. } | HirExpr::Local { .. } | HirExpr::Call { .. } | HirExpr::Error { .. } => None,
     }
 }
 

@@ -84,6 +84,8 @@ pub enum HirStmt {
     /// Stdout: `console.log(a, b, c);`
     ConsoleLog { args: Vec<HirExpr>, span: Span },
     Return { expr: Option<HirExpr>, span: Span },
+    /// Error recovery placeholder (typecheck-level).
+    Error { span: Span },
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +109,8 @@ pub enum HirExpr {
         right: Box<HirExpr>,
         span: Span,
     },
+    /// Error recovery placeholder (typecheck-level).
+    Error { span: Span },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

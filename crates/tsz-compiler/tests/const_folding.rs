@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
-use tsz_compiler::{BuildOptions, OptLevel, TszError, build_executable};
+use tsz_compiler::{build_executable, BuildOptions, CompileOutput, OptLevel, TszError};
+
+const MAX_ERRORS: usize = 50;
 
 fn exe_name(stem: &str) -> String {
     if cfg!(windows) {
@@ -47,12 +49,14 @@ export function main(): bigint {
         })?;
         let output = out_dir.path().join(exe_name("tsz_test_out"));
 
-        build_executable(BuildOptions {
+        let compile = build_executable(BuildOptions {
             entry,
             output: output.clone(),
             opt_level: OptLevel::None,
+            max_errors: MAX_ERRORS,
         })
         .await?;
+        assert_no_errors(&compile);
 
         let out = tokio::process::Command::new(&output)
             .output()
@@ -69,3 +73,9 @@ export function main(): bigint {
     .expect("ok");
 }
 
+fn assert_no_errors(output: &CompileOutput) {
+    assert!(
+        !output.diagnostics.has_errors(),
+        "expected no diagnostics errors"
+    );
+}

@@ -123,7 +123,7 @@ fn clif_param_ty(ptr_ty: ir::Type, ty: Type) -> Result<ir::Type, TszError> {
         Type::BigInt => Ok(ir::types::I64),
         Type::Bool => Ok(ir::types::I8),
         Type::String => Ok(ptr_ty),
-        Type::Void => Err(TszError::Codegen {
+        Type::Void | Type::Error => Err(TszError::Codegen {
             message: "Unsupported parameter type: void".to_string(),
         }),
     }

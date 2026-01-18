@@ -1,4 +1,5 @@
-use crate::{Program, TszError, parser};
+use crate::diagnostics::{Diagnostics, SourceMap};
+use crate::{parser, Program, TszError};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -12,21 +13,25 @@ const LEGACY_SOURCE_EXT: &str = "tsz";
 /// - Minimal, predictable rules
 /// - Async I/O (tokio)
 /// - Explicit errors (no complex Node compatibility)
-pub async fn load_program(entry: &Path) -> Result<Program, TszError> {
+pub async fn load_program(entry: &Path, diags: &mut Diagnostics) -> Result<Program, TszError> {
     let entry_file = resolve_entry_path(entry).await?;
     let entry_file = canonicalize(&entry_file).await?;
 
-    let mut loader = ModuleLoader::new();
+    let mut loader = ModuleLoader::new(diags);
     loader.load_module(&entry_file).await?;
+    let (modules, sources) = loader.finish();
     Ok(Program {
         entry: entry_file,
-        modules: loader.finish(),
+        modules,
+        sources,
     })
 }
 
-struct ModuleLoader {
+struct ModuleLoader<'d> {
     state: HashMap<PathBuf, VisitState>,
     modules: Vec<crate::Module>,
+    sources: SourceMap,
+    diags: &'d mut Diagnostics,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,11 +40,13 @@ enum VisitState {
     Visited,
 }
 
-impl ModuleLoader {
-    fn new() -> Self {
+impl<'d> ModuleLoader<'d> {
+    fn new(diags: &'d mut Diagnostics) -> Self {
         Self {
             state: HashMap::new(),
             modules: Vec::new(),
+            sources: SourceMap::default(),
+            diags,
         }
     }
 
@@ -49,9 +56,8 @@ impl ModuleLoader {
         match self.state.get(&entry_path).copied() {
             Some(VisitState::Visited) => return Ok(()),
             Some(VisitState::Visiting) => {
-                return Err(TszError::Resolve {
-                    message: format!("Cycle detected: {entry_path:?}"),
-                });
+                self.diags.error(format!("Cycle detected: {entry_path:?}"));
+                return Ok(());
             }
             None => {}
         }
@@ -66,7 +72,7 @@ impl ModuleLoader {
         let mut stack = Vec::new();
         self.state.insert(entry_path.clone(), VisitState::Visiting);
         stack.push(Frame {
-            module: parse_module_file(&entry_path).await?,
+            module: parse_module_file(&entry_path, self.diags, &mut self.sources).await?,
             path: entry_path,
             next_import: 0,
         });
@@ -82,45 +88,71 @@ impl ModuleLoader {
             let import = &mut frame.module.imports[frame.next_import];
             frame.next_import += 1;
 
-            let dep = resolve_import_specifier(&frame.path, &import.from).await?;
+            let dep = match resolve_import_specifier(&frame.path, &import.from).await {
+                Ok(dep) => dep,
+                Err(TszError::Resolve { message }) => {
+                    self.diags.error_at(&frame.path, import.span, message);
+                    continue;
+                }
+                Err(TszError::Io { path, source }) => {
+                    self.diags.error(format!("I/O error: {path:?}: {source}"));
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
             let dep = canonicalize(&dep).await?;
             import.resolved_path = Some(dep.clone());
 
             match self.state.get(&dep).copied() {
                 Some(VisitState::Visited) => continue,
                 Some(VisitState::Visiting) => {
-                    return Err(TszError::Resolve {
-                        message: format!("Cycle detected: {dep:?}"),
-                    });
+                    self.diags.error(format!("Cycle detected: {dep:?}"));
+                    continue;
                 }
                 None => {}
             }
 
             self.state.insert(dep.clone(), VisitState::Visiting);
-            stack.push(Frame {
-                module: parse_module_file(&dep).await?,
-                path: dep,
-                next_import: 0,
-            });
+            match parse_module_file(&dep, self.diags, &mut self.sources).await {
+                Ok(module) => stack.push(Frame {
+                    module,
+                    path: dep,
+                    next_import: 0,
+                }),
+                Err(TszError::Io { path, source }) => {
+                    self.diags.error(format!("I/O error: {path:?}: {source}"));
+                    self.state.insert(dep, VisitState::Visited);
+                }
+                Err(TszError::Resolve { message }) => {
+                    self.diags.error(message);
+                    self.state.insert(dep, VisitState::Visited);
+                }
+                Err(e) => return Err(e),
+            }
         }
 
         Ok(())
     }
 
-    fn finish(self) -> Vec<crate::Module> {
+    fn finish(self) -> (Vec<crate::Module>, SourceMap) {
         // Postorder with dependencies first; later stages can reorder as needed.
-        self.modules
+        (self.modules, self.sources)
     }
 }
 
-async fn parse_module_file(path: &Path) -> Result<crate::Module, TszError> {
+async fn parse_module_file(
+    path: &Path,
+    diags: &mut Diagnostics,
+    sources: &mut SourceMap,
+) -> Result<crate::Module, TszError> {
     let source = tokio::fs::read_to_string(path)
         .await
         .map_err(|e| TszError::Io {
             path: path.to_path_buf(),
             source: e,
         })?;
-    parser::parse_module(path, &source)
+    sources.insert(path.to_path_buf(), source.clone());
+    Ok(parser::parse_module(path, &source, diags))
 }
 
 async fn resolve_entry_path(entry: &Path) -> Result<PathBuf, TszError> {

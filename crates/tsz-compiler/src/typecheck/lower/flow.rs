@@ -13,7 +13,7 @@ pub(super) fn stmts_may_fallthrough(stmts: &[HirStmt]) -> bool {
 
 fn stmt_may_fallthrough(stmt: &HirStmt) -> bool {
     match stmt {
-        HirStmt::Let { .. } | HirStmt::Assign { .. } | HirStmt::ConsoleLog { .. } => true,
+        HirStmt::Let { .. } | HirStmt::Assign { .. } | HirStmt::ConsoleLog { .. } | HirStmt::Error { .. } => true,
         HirStmt::Return { .. } | HirStmt::Break { .. } | HirStmt::Continue { .. } => false,
         HirStmt::If {
             then_body,
@@ -33,4 +33,3 @@ fn stmt_may_fallthrough(stmt: &HirStmt) -> bool {
         }
     }
 }
-

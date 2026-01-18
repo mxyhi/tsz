@@ -1,4 +1,5 @@
 use super::FuncInfo;
+use crate::diagnostics::Diagnostics;
 use crate::{
     BinaryOp, Expr, HirBinaryOp, HirExpr, HirLocal, HirLocalId, HirParam, HirParamId, HirStmt, Span, TszError, Type,
 };
@@ -52,25 +53,32 @@ impl LocalScopes {
         self.stack.iter().rev().find_map(|scope| scope.get(name).cloned())
     }
 
-    fn insert_current(&mut self, name: String, info: LocalInfo, name_span: Span) -> Result<(), TszError> {
+    fn insert_current(
+        &mut self,
+        name: String,
+        info: LocalInfo,
+        name_span: Span,
+        diags: &mut Diagnostics,
+        module_path: &std::path::Path,
+    ) -> bool {
         let current = self.stack.last_mut().expect("at least one scope");
         if current.contains_key(&name) {
-            return Err(TszError::Type {
-                message: format!("Duplicate local binding declaration: {name}"),
-                span: name_span,
-            });
+            diags.error_at(module_path, name_span, format!("Duplicate local binding declaration: {name}"));
+            return false;
         }
         current.insert(name, info);
-        Ok(())
+        true
     }
 }
 
 struct LowerCtx<'a> {
     module_idx: usize,
+    module_path: &'a std::path::Path,
     module_scope: &'a HashMap<String, usize>,
     scopes: &'a [HashMap<String, usize>],
     func_infos: &'a [FuncInfo],
     return_type: Type,
+    diags: &'a mut Diagnostics,
 }
 
 struct LowerFnState {
@@ -94,32 +102,37 @@ impl LowerFnState {
 pub(super) fn lower_function_body(
     module_idx: usize,
     func: &crate::FunctionDecl,
+    module_path: &std::path::Path,
     module_scope: &HashMap<String, usize>,
     scopes: &[HashMap<String, usize>],
     func_infos: &[FuncInfo],
+    diags: &mut Diagnostics,
 ) -> Result<(Vec<HirParam>, Vec<HirLocal>, Vec<HirStmt>), TszError> {
-    let ctx = LowerCtx {
+    let mut ctx = LowerCtx {
         module_idx,
+        module_path,
         module_scope,
         scopes,
         func_infos,
         return_type: func.return_type,
+        diags,
     };
     let mut state = LowerFnState::new(func.params.len());
 
-    lower_params(&ctx, &mut state, &func.params)?;
+    lower_params(&mut ctx, &mut state, &func.params)?;
 
     let mut body = Vec::with_capacity(func.body.len());
-    stmt::lower_stmt_list(&ctx, &mut state, &mut body, &func.body)?;
+    stmt::lower_stmt_list(&mut ctx, &mut state, &mut body, &func.body)?;
 
     if flow::stmts_may_fallthrough(&body) {
         match func.return_type {
             Type::Void => body.push(HirStmt::Return { expr: None, span: func.span }),
-            Type::Number | Type::BigInt | Type::Bool | Type::String => {
-                return Err(TszError::Type {
-                    message: "Not all control paths return a value".to_string(),
-                    span: func.span,
-                });
+            Type::Number | Type::BigInt | Type::Bool | Type::String | Type::Error => {
+                ctx.diags.error_at(
+                    ctx.module_path,
+                    func.span,
+                    "Not all control paths return a value",
+                );
             }
         }
     }
@@ -127,14 +140,13 @@ pub(super) fn lower_function_body(
     Ok((state.params, state.locals, body))
 }
 
-fn lower_params(ctx: &LowerCtx<'_>, state: &mut LowerFnState, params: &[crate::ParamDecl]) -> Result<(), TszError> {
+fn lower_params(ctx: &mut LowerCtx<'_>, state: &mut LowerFnState, params: &[crate::ParamDecl]) -> Result<(), TszError> {
     for p in params {
         // Keep `foo` vs `foo()` unambiguous: parameters cannot shadow module-level symbols.
         if ctx.module_scope.contains_key(&p.name) {
-            return Err(TszError::Type {
-                message: format!("Parameter name conflicts with a function/import: {}", p.name),
-                span: p.name_span,
-            });
+            ctx.diags
+                .error_at(ctx.module_path, p.name_span, format!("Parameter name conflicts with a function/import: {}", p.name));
+            continue;
         }
 
         let param_id = state.params.len();
@@ -151,36 +163,40 @@ fn lower_params(ctx: &LowerCtx<'_>, state: &mut LowerFnState, params: &[crate::P
                 ty: p.ty,
             },
             p.name_span,
-        )?;
+            ctx.diags,
+            ctx.module_path,
+        );
     }
     Ok(())
 }
 
-fn validate_local_decl_type(ty: Type, span: Span) -> Result<(), TszError> {
+fn validate_local_decl_type(ctx: &mut LowerCtx<'_>, ty: Type, span: Span) -> bool {
     match ty {
-        Type::Number | Type::BigInt | Type::Bool | Type::String => Ok(()),
-        Type::Void => Err(TszError::Type {
-            message: "Local variable type cannot be void".to_string(),
-            span,
-        }),
+        Type::Number | Type::BigInt | Type::Bool | Type::String => true,
+        Type::Void => {
+            ctx.diags
+                .error_at(ctx.module_path, span, "Local variable type cannot be void");
+            false
+        }
+        Type::Error => false,
     }
 }
 
-fn validate_local_value_type(ty: Type, span: Span) -> Result<(), TszError> {
+fn validate_local_value_type(ctx: &mut LowerCtx<'_>, ty: Type, span: Span) -> bool {
     match ty {
-        Type::Number | Type::BigInt | Type::Bool | Type::String => Ok(()),
-        Type::Void => Err(TszError::Type {
-            message: "Local initializer expression cannot be void".to_string(),
-            span,
-        }),
+        Type::Number | Type::BigInt | Type::Bool | Type::String => true,
+        Type::Void => {
+            ctx.diags
+                .error_at(ctx.module_path, span, "Local initializer expression cannot be void");
+            false
+        }
+        Type::Error => false,
     }
 }
 
 fn lower_expr_in_function(
-    module_idx: usize,
+    ctx: &mut LowerCtx<'_>,
     expr: &Expr,
-    scopes: &[HashMap<String, usize>],
-    func_infos: &[FuncInfo],
     locals: &LocalScopes,
 ) -> Result<(HirExpr, Type), TszError> {
     match expr {
@@ -190,24 +206,31 @@ fn lower_expr_in_function(
         Expr::String { value, span } => Ok((HirExpr::String { value: value.clone(), span: *span }, Type::String)),
         Expr::Ident { name, span } => {
             let Some(info) = locals.lookup(name) else {
-                return Err(TszError::Type {
-                    message: format!("Undefined variable: {name}"),
-                    span: *span,
-                });
+                ctx.diags
+                    .error_at(ctx.module_path, *span, format!("Undefined variable: {name}"));
+                return Ok((HirExpr::Error { span: *span }, Type::Error));
             };
             match info.value {
                 LocalValue::Param(id) => Ok((HirExpr::Param { param: id, span: *span }, info.ty)),
                 LocalValue::Local(id) => Ok((HirExpr::Local { local: id, span: *span }, info.ty)),
-                LocalValue::Const(v) => match v {
-                    ConstValue::Number(value) => Ok((HirExpr::Number { value, span: *span }, Type::Number)),
-                    ConstValue::BigInt(value) => Ok((HirExpr::BigInt { value, span: *span }, Type::BigInt)),
-                    ConstValue::Bool(value) => Ok((HirExpr::Bool { value, span: *span }, Type::Bool)),
-                    ConstValue::String(value) => Ok((HirExpr::String { value, span: *span }, Type::String)),
-                },
+                LocalValue::Const(v) => {
+                    if info.ty == Type::Error {
+                        return Ok((HirExpr::Error { span: *span }, Type::Error));
+                    }
+                    match v {
+                        ConstValue::Number(value) => Ok((HirExpr::Number { value, span: *span }, Type::Number)),
+                        ConstValue::BigInt(value) => Ok((HirExpr::BigInt { value, span: *span }, Type::BigInt)),
+                        ConstValue::Bool(value) => Ok((HirExpr::Bool { value, span: *span }, Type::Bool)),
+                        ConstValue::String(value) => Ok((HirExpr::String { value, span: *span }, Type::String)),
+                    }
+                }
             }
         }
         Expr::UnaryMinus { expr, span } => {
-            let (inner, ty) = lower_expr_in_function(module_idx, expr, scopes, func_infos, locals)?;
+            let (inner, ty) = lower_expr_in_function(ctx, expr, locals)?;
+            if ty == Type::Error {
+                return Ok((HirExpr::Error { span: *span }, Type::Error));
+            }
             match ty {
                 Type::Number | Type::BigInt => Ok((
                     HirExpr::UnaryMinus {
@@ -216,19 +239,23 @@ fn lower_expr_in_function(
                     },
                     ty,
                 )),
-                Type::Void | Type::Bool | Type::String => Err(TszError::Type {
-                    message: "Unary minus is not supported for this type".to_string(),
-                    span: *span,
-                }),
+                Type::Void | Type::Bool | Type::String => {
+                    ctx.diags
+                        .error_at(ctx.module_path, *span, "Unary minus is not supported for this type");
+                    Ok((HirExpr::Error { span: *span }, Type::Error))
+                }
+                Type::Error => Ok((HirExpr::Error { span: *span }, Type::Error)),
             }
         }
         Expr::UnaryNot { expr, span } => {
-            let (inner, ty) = lower_expr_in_function(module_idx, expr, scopes, func_infos, locals)?;
+            let (inner, ty) = lower_expr_in_function(ctx, expr, locals)?;
+            if ty == Type::Error {
+                return Ok((HirExpr::Error { span: *span }, Type::Error));
+            }
             if ty != Type::Bool {
-                return Err(TszError::Type {
-                    message: "Logical not only supports boolean".to_string(),
-                    span: *span,
-                });
+                ctx.diags
+                    .error_at(ctx.module_path, *span, "Logical not only supports boolean");
+                return Ok((HirExpr::Error { span: *span }, Type::Error));
             }
             Ok((
                 HirExpr::UnaryNot {
@@ -239,46 +266,62 @@ fn lower_expr_in_function(
             ))
         }
         Expr::Call { callee, args, span } => {
-            let scope = scopes.get(module_idx).ok_or_else(|| TszError::Type {
+            let scope = ctx.scopes.get(ctx.module_idx).ok_or_else(|| TszError::Type {
                 message: "Module scope index out of bounds (internal error)".to_string(),
                 span: *span,
             })?;
-            let callee_id = scope.get(callee).copied().ok_or_else(|| TszError::Type {
-                message: format!("Undefined function: {callee}"),
-                span: *span,
-            })?;
-            let callee_info = func_infos
+            let Some(callee_id) = scope.get(callee).copied() else {
+                ctx.diags
+                    .error_at(ctx.module_path, *span, format!("Undefined function: {callee}"));
+                return Ok((HirExpr::Error { span: *span }, Type::Error));
+            };
+            let callee_info = ctx
+                .func_infos
                 .get(callee_id)
                 .ok_or_else(|| TszError::Type {
                     message: "Function index out of bounds (internal error)".to_string(),
                     span: *span,
                 })?;
 
+            let mut had_error = false;
             if args.len() != callee_info.params.len() {
-                return Err(TszError::Type {
-                    message: format!(
+                ctx.diags.error_at(
+                    ctx.module_path,
+                    *span,
+                    format!(
                         "Argument count mismatch for {callee}: expected {}, got {}",
                         callee_info.params.len(),
                         args.len()
                     ),
-                    span: *span,
-                });
+                );
+                had_error = true;
             }
 
             let mut hir_args = Vec::with_capacity(args.len());
             for (idx, arg) in args.iter().enumerate() {
-                let (hir, ty) = lower_expr_in_function(module_idx, arg, scopes, func_infos, locals)?;
-                let expected = callee_info.params[idx];
-                if ty != expected {
-                    return Err(TszError::Type {
-                        message: format!(
-                            "Argument type mismatch for {callee} (arg {idx}): expected {:?}, got {:?}",
-                            expected, ty
-                        ),
-                        span: ast_expr_span(arg),
-                    });
+                let (hir, ty) = lower_expr_in_function(ctx, arg, locals)?;
+                if let Some(expected) = callee_info.params.get(idx).copied() {
+                    if ty == Type::Error {
+                        had_error = true;
+                    } else if ty != expected {
+                        ctx.diags.error_at(
+                            ctx.module_path,
+                            ast_expr_span(arg),
+                            format!(
+                                "Argument type mismatch for {callee} (arg {idx}): expected {:?}, got {:?}",
+                                expected, ty
+                            ),
+                        );
+                        had_error = true;
+                    }
+                } else {
+                    had_error = true;
                 }
                 hir_args.push(hir);
+            }
+
+            if had_error {
+                return Ok((HirExpr::Error { span: *span }, Type::Error));
             }
 
             Ok((
@@ -290,29 +333,27 @@ fn lower_expr_in_function(
                 callee_info.return_type,
             ))
         }
-        Expr::Binary { op, left, right, span } => lower_binary_expr(module_idx, op, left, right, *span, scopes, func_infos, locals),
+        Expr::Binary { op, left, right, span } => lower_binary_expr(ctx, op, left, right, *span, locals),
+        Expr::Error { span } => Ok((HirExpr::Error { span: *span }, Type::Error)),
     }
 }
 
 fn lower_console_log_args(
-    module_idx: usize,
+    ctx: &mut LowerCtx<'_>,
     args: &[Expr],
-    scopes: &[HashMap<String, usize>],
-    func_infos: &[FuncInfo],
     locals: &LocalScopes,
     span: Span,
 ) -> Result<Vec<HirExpr>, TszError> {
     let mut out = Vec::with_capacity(args.len());
     for arg in args {
-        let (hir, ty) = lower_expr_in_function(module_idx, arg, scopes, func_infos, locals)?;
+        let (hir, ty) = lower_expr_in_function(ctx, arg, locals)?;
         match ty {
             Type::Number | Type::BigInt | Type::Bool | Type::String => {}
             Type::Void => {
-                return Err(TszError::Type {
-                    message: "console.log arguments cannot be void".to_string(),
-                    span,
-                });
+                ctx.diags
+                    .error_at(ctx.module_path, span, "console.log arguments cannot be void");
             }
+            Type::Error => {}
         }
         out.push(hir);
     }
@@ -329,45 +370,50 @@ fn ast_expr_span(expr: &Expr) -> Span {
         | Expr::UnaryMinus { span, .. }
         | Expr::UnaryNot { span, .. }
         | Expr::Call { span, .. }
-        | Expr::Binary { span, .. } => *span,
+        | Expr::Binary { span, .. }
+        | Expr::Error { span } => *span,
     }
 }
 
 fn lower_binary_expr(
-    module_idx: usize,
+    ctx: &mut LowerCtx<'_>,
     op: &BinaryOp,
     left: &Expr,
     right: &Expr,
     span: Span,
-    scopes: &[HashMap<String, usize>],
-    func_infos: &[FuncInfo],
     locals: &LocalScopes,
 ) -> Result<(HirExpr, Type), TszError> {
-    let (hir_left, left_ty) = lower_expr_in_function(module_idx, left, scopes, func_infos, locals)?;
-    let (hir_right, right_ty) = lower_expr_in_function(module_idx, right, scopes, func_infos, locals)?;
+    let (hir_left, left_ty) = lower_expr_in_function(ctx, left, locals)?;
+    let (hir_right, right_ty) = lower_expr_in_function(ctx, right, locals)?;
+    if left_ty == Type::Error || right_ty == Type::Error {
+        return Ok((HirExpr::Error { span }, Type::Error));
+    }
     if left_ty != right_ty {
-        return Err(TszError::Type {
-            message: format!(
+        ctx.diags.error_at(
+            ctx.module_path,
+            span,
+            format!(
                 "Binary operator type mismatch: left is {:?}, right is {:?}",
                 left_ty, right_ty
             ),
-            span,
-        });
+        );
+        return Ok((HirExpr::Error { span }, Type::Error));
     }
 
     match *op {
         BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => {
-            lower_arithmetic_binary(*op, hir_left, hir_right, left_ty, span)
+            lower_arithmetic_binary(ctx, *op, hir_left, hir_right, left_ty, span)
         }
-        BinaryOp::Eq | BinaryOp::Ne => lower_equality_binary(*op, hir_left, hir_right, left_ty, span),
+        BinaryOp::Eq | BinaryOp::Ne => lower_equality_binary(ctx, *op, hir_left, hir_right, left_ty, span),
         BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
-            lower_relational_binary(*op, hir_left, hir_right, left_ty, span)
+            lower_relational_binary(ctx, *op, hir_left, hir_right, left_ty, span)
         }
-        BinaryOp::And | BinaryOp::Or => lower_logical_binary(*op, hir_left, hir_right, left_ty, span),
+        BinaryOp::And | BinaryOp::Or => lower_logical_binary(ctx, *op, hir_left, hir_right, left_ty, span),
     }
 }
 
 fn lower_arithmetic_binary(
+    ctx: &mut LowerCtx<'_>,
     op: BinaryOp,
     left: HirExpr,
     right: HirExpr,
@@ -377,11 +423,11 @@ fn lower_arithmetic_binary(
     match left_ty {
         Type::Number | Type::BigInt => {}
         Type::Void | Type::Bool | Type::String => {
-            return Err(TszError::Type {
-                message: "Binary operators only support number/bigint".to_string(),
-                span,
-            });
+            ctx.diags
+                .error_at(ctx.module_path, span, "Binary operators only support number/bigint");
+            return Ok((HirExpr::Error { span }, Type::Error));
         }
+        Type::Error => return Ok((HirExpr::Error { span }, Type::Error)),
     }
     let hir_op = match op {
         BinaryOp::Add => HirBinaryOp::Add,
@@ -402,6 +448,7 @@ fn lower_arithmetic_binary(
 }
 
 fn lower_equality_binary(
+    ctx: &mut LowerCtx<'_>,
     op: BinaryOp,
     left: HirExpr,
     right: HirExpr,
@@ -411,11 +458,11 @@ fn lower_equality_binary(
     match left_ty {
         Type::Number | Type::BigInt | Type::Bool => {}
         Type::String | Type::Void => {
-            return Err(TszError::Type {
-                message: "Equality only supports number/bigint/boolean".to_string(),
-                span,
-            });
+            ctx.diags
+                .error_at(ctx.module_path, span, "Equality only supports number/bigint/boolean");
+            return Ok((HirExpr::Error { span }, Type::Error));
         }
+        Type::Error => return Ok((HirExpr::Error { span }, Type::Error)),
     }
     let hir_op = match op {
         BinaryOp::Eq => HirBinaryOp::Eq,
@@ -434,6 +481,7 @@ fn lower_equality_binary(
 }
 
 fn lower_relational_binary(
+    ctx: &mut LowerCtx<'_>,
     op: BinaryOp,
     left: HirExpr,
     right: HirExpr,
@@ -443,11 +491,11 @@ fn lower_relational_binary(
     match left_ty {
         Type::Number | Type::BigInt => {}
         Type::Bool | Type::String | Type::Void => {
-            return Err(TszError::Type {
-                message: "Relational operators only support number/bigint".to_string(),
-                span,
-            });
+            ctx.diags
+                .error_at(ctx.module_path, span, "Relational operators only support number/bigint");
+            return Ok((HirExpr::Error { span }, Type::Error));
         }
+        Type::Error => return Ok((HirExpr::Error { span }, Type::Error)),
     }
     let hir_op = match op {
         BinaryOp::Lt => HirBinaryOp::Lt,
@@ -468,6 +516,7 @@ fn lower_relational_binary(
 }
 
 fn lower_logical_binary(
+    ctx: &mut LowerCtx<'_>,
     op: BinaryOp,
     left: HirExpr,
     right: HirExpr,
@@ -475,10 +524,11 @@ fn lower_logical_binary(
     span: Span,
 ) -> Result<(HirExpr, Type), TszError> {
     if left_ty != Type::Bool {
-        return Err(TszError::Type {
-            message: "Logical operators only support boolean".to_string(),
-            span,
-        });
+        if left_ty != Type::Error {
+            ctx.diags
+                .error_at(ctx.module_path, span, "Logical operators only support boolean");
+        }
+        return Ok((HirExpr::Error { span }, Type::Error));
     }
     let hir_op = match op {
         BinaryOp::And => HirBinaryOp::And,

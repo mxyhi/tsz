@@ -1,9 +1,17 @@
 use super::*;
+use crate::diagnostics::Diagnostics;
+
+fn parse_ok(src: &str) -> Module {
+    let mut diags = Diagnostics::new(10);
+    let m = parse_module(Path::new("main.ts"), src, &mut diags);
+    assert!(!diags.has_errors(), "parse diagnostics not empty");
+    m
+}
 
 #[test]
 fn parse_minimal_main() {
     let src = "export function main(): bigint { return 42n; }";
-    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let m = parse_ok(src);
     assert_eq!(m.imports.len(), 0);
     assert_eq!(m.functions.len(), 1);
     assert_eq!(m.functions[0].name, "main");
@@ -16,7 +24,7 @@ fn parse_import_and_call() {
 import { foo, bar } from "./lib.ts";
 export function main(): bigint { return foo(); }
 "#;
-    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let m = parse_ok(src);
     assert_eq!(m.imports.len(), 1);
     assert_eq!(m.imports[0].names.len(), 2);
     assert_eq!(m.imports[0].names[0].name, "foo");
@@ -28,7 +36,7 @@ export function main(): bigint { return foo(); }
 #[test]
 fn parse_void_return_stmt() {
     let src = "export function main(): void { return; }";
-    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let m = parse_ok(src);
     let Some(Stmt::Return { expr, .. }) = m.functions[0].body.first() else {
         panic!("expected return stmt");
     };
@@ -43,7 +51,7 @@ export function main(): void {
   return;
 }
 "#;
-    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let m = parse_ok(src);
     assert_eq!(m.functions.len(), 1);
     assert_eq!(m.functions[0].body.len(), 2);
 
@@ -62,7 +70,7 @@ export function main(): bigint {
   return y;
 }
 "#;
-    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let m = parse_ok(src);
     assert_eq!(m.functions.len(), 1);
     assert_eq!(m.functions[0].body.len(), 3);
 }
@@ -76,7 +84,7 @@ export function main(): bigint {
   return y;
 }
 "#;
-    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let m = parse_ok(src);
     assert_eq!(m.functions.len(), 1);
     assert_eq!(m.functions[0].body.len(), 3);
 }
@@ -90,7 +98,7 @@ export function main(): bigint {
   return x;
 }
 "#;
-    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let m = parse_ok(src);
     assert_eq!(m.functions.len(), 1);
     assert_eq!(m.functions[0].body.len(), 3);
 
@@ -109,7 +117,7 @@ export function main(): bigint {
   return x;
 }
 "#;
-    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let m = parse_ok(src);
     assert_eq!(m.functions.len(), 1);
     assert_eq!(m.functions[0].body.len(), 3);
 
@@ -128,7 +136,7 @@ fn parse_function_params() {
     let src = r#"
 export function add(a: bigint, b: bigint): bigint { return a; }
 "#;
-    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let m = parse_ok(src);
     assert_eq!(m.functions.len(), 1);
     let f = &m.functions[0];
     assert_eq!(f.name, "add");
@@ -145,7 +153,7 @@ fn parse_call_with_args() {
 function add(a: bigint, b: bigint): bigint { return a; }
 export function main(): bigint { return add(1n, 2n); }
 "#;
-    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let m = parse_ok(src);
     let f = &m.functions[1];
     let Some(Stmt::Return { expr: Some(Expr::Call { callee, args, .. }), .. }) = f.body.first() else {
         panic!("expected return add(1n, 2n)");
@@ -161,7 +169,7 @@ export function main(): number {
   return (1 + 2) * 3 + 4 / 2;
 }
 "#;
-    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let m = parse_ok(src);
     let f = &m.functions[0];
     let Some(Stmt::Return { expr: Some(expr), .. }) = f.body.first() else {
         panic!("expected return");
@@ -195,7 +203,7 @@ export function main(): boolean {
   return 1 + 2 < 3 * 4;
 }
 "#;
-    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let m = parse_ok(src);
     let f = &m.functions[0];
     let Some(Stmt::Return { expr: Some(expr), .. }) = f.body.first() else {
         panic!("expected return");
@@ -215,7 +223,7 @@ export function main(): boolean {
   return true || false && !false;
 }
 "#;
-    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let m = parse_ok(src);
     let f = &m.functions[0];
     let Some(Stmt::Return { expr: Some(expr), .. }) = f.body.first() else {
         panic!("expected return");
@@ -252,7 +260,7 @@ export function main(): boolean {
   return 1n == 2n;
 }
 "#;
-    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let m = parse_ok(src);
     let f = &m.functions[0];
     let Some(Stmt::Return { expr: Some(expr), .. }) = f.body.first() else {
         panic!("expected return");
@@ -268,7 +276,7 @@ export function main(): void {
   return;
 }
 "#;
-    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let m = parse_ok(src);
     let f = &m.functions[0];
     let Some(Stmt::Block { stmts, .. }) = f.body.first() else {
         panic!("expected block stmt");
@@ -283,7 +291,7 @@ export function main(): bigint {
   if (true) { return 1n; } else { return 2n; }
 }
 "#;
-    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let m = parse_ok(src);
     let f = &m.functions[0];
     let Some(Stmt::If { else_branch, .. }) = f.body.first() else {
         panic!("expected if stmt");
@@ -298,7 +306,7 @@ export function main(): void {
   if (true) { return; } else if (false) { return; } else { return; }
 }
 "#;
-    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let m = parse_ok(src);
     let f = &m.functions[0];
     let Some(Stmt::If { else_branch, .. }) = f.body.first() else {
         panic!("expected if stmt");
@@ -317,7 +325,7 @@ export function main(): void {
   return;
 }
 "#;
-    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let m = parse_ok(src);
     let f = &m.functions[0];
     let Some(Stmt::For {
         init,
@@ -346,7 +354,7 @@ export function main(): void {
   return;
 }
 "#;
-    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let m = parse_ok(src);
     let f = &m.functions[0];
     let Some(Stmt::While { .. }) = f.body.first() else {
         panic!("expected while stmt");
@@ -361,7 +369,7 @@ export function main(): void {
   return;
 }
 "#;
-    let m = parse_module(Path::new("main.ts"), src).expect("parse ok");
+    let m = parse_ok(src);
     let f = &m.functions[0];
     let Some(Stmt::While { .. }) = f.body.first() else {
         panic!("expected while stmt");

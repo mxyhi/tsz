@@ -35,7 +35,7 @@ pub(super) fn codegen_unary_minus(
     match ty {
         Type::BigInt => Ok(builder.ins().ineg(v)),
         Type::Number => Ok(builder.ins().fneg(v)),
-        Type::Void | Type::Bool | Type::String => Err(TszError::Codegen {
+        Type::Void | Type::Bool | Type::String | Type::Error => Err(TszError::Codegen {
             message: "Invalid unary minus type (should have been blocked by typecheck)".to_string(),
         }),
     }
@@ -188,7 +188,7 @@ fn codegen_arithmetic_binary(
             crate::HirBinaryOp::Div => builder.ins().sdiv(lhs, rhs),
             _ => unreachable!("checked arithmetic op"),
         }),
-        Type::Void | Type::Bool | Type::String => Err(TszError::Codegen {
+        Type::Void | Type::Bool | Type::String | Type::Error => Err(TszError::Codegen {
             message: "Invalid arithmetic operator type (should have been blocked by typecheck)".to_string(),
         }),
     }
@@ -265,7 +265,7 @@ fn codegen_compare_cond(
     match ty {
         Type::Number => Ok(builder.ins().fcmp(float_cc_for(op), lhs, rhs)),
         Type::BigInt | Type::Bool => Ok(builder.ins().icmp(int_cc_for(op), lhs, rhs)),
-        Type::Void | Type::String => Err(TszError::Codegen {
+        Type::Void | Type::String | Type::Error => Err(TszError::Codegen {
             message: "Invalid comparison type (should have been blocked by typecheck)".to_string(),
         }),
     }

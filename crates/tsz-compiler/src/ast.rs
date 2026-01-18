@@ -1,9 +1,10 @@
-use crate::Span;
+use crate::{diagnostics::SourceMap, Span};
 
 #[derive(Debug, Clone)]
 pub struct Program {
     pub entry: std::path::PathBuf,
     pub modules: Vec<Module>,
+    pub sources: SourceMap,
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +105,8 @@ pub enum Stmt {
         expr: Expr,
         span: Span,
     },
+    /// Error recovery placeholder (parser-level).
+    Error { span: Span },
 }
 
 #[derive(Debug, Clone)]
@@ -122,6 +125,8 @@ pub enum Expr {
         right: Box<Expr>,
         span: Span,
     },
+    /// Error recovery placeholder (parser-level).
+    Error { span: Span },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,4 +152,6 @@ pub enum Type {
     Void,
     Bool,
     String,
+    /// Error recovery placeholder (parser/typecheck-level).
+    Error,
 }

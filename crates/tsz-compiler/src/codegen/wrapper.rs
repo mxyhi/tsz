@@ -18,7 +18,7 @@ pub(super) fn user_fn_sig(
             Type::BigInt => ir::types::I64,
             Type::Bool => ir::types::I8,
             Type::String => ptr_ty,
-            Type::Void => {
+            Type::Void | Type::Error => {
                 return Err(TszError::Codegen {
                     message: "Unsupported parameter type (should have been blocked by typecheck)".to_string(),
                 });
@@ -32,6 +32,11 @@ pub(super) fn user_fn_sig(
         Type::Number => sig.returns.push(ir::AbiParam::new(ir::types::F64)),
         Type::Bool => sig.returns.push(ir::AbiParam::new(ir::types::I8)),
         Type::String => sig.returns.push(ir::AbiParam::new(ptr_ty)),
+        Type::Error => {
+            return Err(TszError::Codegen {
+                message: "Unsupported return type (error)".to_string(),
+            });
+        }
     }
 
     Ok(sig)
@@ -93,7 +98,7 @@ fn build_exit_code(fn_builder: &mut FunctionBuilder<'_>, call: ir::Inst, return_
             let v = fn_builder.inst_results(call)[0];
             fn_builder.ins().fcvt_to_sint(ir::types::I32, v)
         }
-        Type::Bool | Type::String => {
+        Type::Bool | Type::String | Type::Error => {
             return Err(TszError::Codegen {
                 message: "Entry return type only supports number/bigint/void".to_string(),
             });

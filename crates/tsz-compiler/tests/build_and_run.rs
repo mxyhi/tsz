@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
-use tsz_compiler::{BuildOptions, OptLevel, TszError, build_executable};
+use tsz_compiler::{build_executable, BuildOptions, CompileOutput, OptLevel, TszError};
+
+const MAX_ERRORS: usize = 50;
 
 fn exe_name(stem: &str) -> String {
     if cfg!(windows) {
@@ -22,25 +24,49 @@ async fn build_and_run(entry: PathBuf, expected_exit: i32) -> Result<(), TszErro
         path: PathBuf::from("<tempdir>"),
         source: e,
     })?;
-    let output = dir.path().join(exe_name("tsz_test_out"));
+    let exe_path = dir.path().join(exe_name("tsz_test_out"));
 
-    build_executable(BuildOptions {
+    let compile = build_executable(BuildOptions {
         entry,
-        output: output.clone(),
+        output: exe_path.clone(),
         opt_level: OptLevel::None,
+        max_errors: MAX_ERRORS,
     })
     .await?;
+    assert_no_errors(&compile);
 
-    let status = tokio::process::Command::new(&output)
+    let status = tokio::process::Command::new(&exe_path)
         .status()
         .await
         .map_err(|e| TszError::Io {
-            path: output.clone(),
+            path: exe_path.clone(),
             source: e,
         })?;
 
     assert_eq!(status.code().unwrap_or(1), expected_exit);
     Ok(())
+}
+
+fn assert_no_errors(output: &CompileOutput) {
+    assert!(
+        !output.diagnostics.has_errors(),
+        "expected no diagnostics errors"
+    );
+}
+
+fn assert_has_error(output: &CompileOutput, needle: &str) {
+    assert!(
+        output.diagnostics.has_errors(),
+        "expected diagnostics to contain errors"
+    );
+    assert!(
+        output
+            .diagnostics
+            .items()
+            .iter()
+            .any(|d| d.message.contains(needle)),
+        "diagnostics did not contain expected error: {needle}"
+    );
 }
 
 #[test]
@@ -323,12 +349,14 @@ export function main(): bigint {
         })?;
         let output = out_dir.path().join(exe_name("tsz_test_out"));
 
-        build_executable(BuildOptions {
+        let compile = build_executable(BuildOptions {
             entry,
             output: output.clone(),
             opt_level: OptLevel::None,
+            max_errors: MAX_ERRORS,
         })
         .await?;
+        assert_no_errors(&compile);
 
         let out = tokio::process::Command::new(&output)
             .output()
@@ -378,12 +406,14 @@ export function main(): bigint {
         })?;
         let output = out_dir.path().join(exe_name("tsz_test_out"));
 
-        build_executable(BuildOptions {
+        let compile = build_executable(BuildOptions {
             entry,
             output: output.clone(),
             opt_level: OptLevel::None,
+            max_errors: MAX_ERRORS,
         })
         .await?;
+        assert_no_errors(&compile);
 
         let out = tokio::process::Command::new(&output)
             .output()
@@ -438,12 +468,14 @@ export function main(): bigint {
         })?;
         let output = out_dir.path().join(exe_name("tsz_test_out"));
 
-        build_executable(BuildOptions {
+        let compile = build_executable(BuildOptions {
             entry,
             output: output.clone(),
             opt_level: OptLevel::None,
+            max_errors: MAX_ERRORS,
         })
         .await?;
+        assert_no_errors(&compile);
 
         let out = tokio::process::Command::new(&output)
             .output()
@@ -490,12 +522,14 @@ export function main(): bigint {
         })?;
         let output = out_dir.path().join(exe_name("tsz_test_out"));
 
-        build_executable(BuildOptions {
+        let compile = build_executable(BuildOptions {
             entry,
             output: output.clone(),
             opt_level: OptLevel::None,
+            max_errors: MAX_ERRORS,
         })
         .await?;
+        assert_no_errors(&compile);
 
         let out = tokio::process::Command::new(&output)
             .output()
@@ -598,12 +632,14 @@ export function main(): bigint {
         })?;
         let output = out_dir.path().join(exe_name("tsz_test_out"));
 
-        build_executable(BuildOptions {
+        let compile = build_executable(BuildOptions {
             entry,
             output: output.clone(),
             opt_level: OptLevel::None,
+            max_errors: MAX_ERRORS,
         })
         .await?;
+        assert_no_errors(&compile);
 
         let out = tokio::process::Command::new(&output)
             .output()
@@ -734,23 +770,15 @@ export function main(): void {
         })?;
         let output = out_dir.path().join(exe_name("tsz_test_out"));
 
-        let err = build_executable(BuildOptions {
+        let output = build_executable(BuildOptions {
             entry,
             output,
             opt_level: OptLevel::None,
+            max_errors: MAX_ERRORS,
         })
-        .await
-        .expect_err("should fail");
+        .await?;
 
-        match err {
-            TszError::Type { message, .. } => {
-                assert!(
-                    message.contains("break is only allowed inside while/for"),
-                    "unexpected: {message}"
-                );
-            }
-            other => panic!("expected type error, got: {other:?}"),
-        }
+        assert_has_error(&output, "break is only allowed inside while/for");
         Ok::<(), TszError>(())
     })
     .expect("ok");
@@ -817,23 +845,15 @@ export function main(): void {
         })?;
         let output = out_dir.path().join(exe_name("tsz_test_out"));
 
-        let err = build_executable(BuildOptions {
+        let output = build_executable(BuildOptions {
             entry,
             output,
             opt_level: OptLevel::None,
+            max_errors: MAX_ERRORS,
         })
-        .await
-        .expect_err("should fail");
+        .await?;
 
-        match err {
-            TszError::Type { message, .. } => {
-                assert!(
-                    message.contains("continue is only allowed inside while/for"),
-                    "unexpected: {message}"
-                );
-            }
-            other => panic!("expected type error, got: {other:?}"),
-        }
+        assert_has_error(&output, "continue is only allowed inside while/for");
         Ok::<(), TszError>(())
     })
     .expect("ok");
@@ -865,20 +885,15 @@ export function main(): bigint {
         })?;
         let output = out_dir.path().join(exe_name("tsz_test_out"));
 
-        let err = build_executable(BuildOptions {
+        let output = build_executable(BuildOptions {
             entry,
             output,
             opt_level: OptLevel::None,
+            max_errors: MAX_ERRORS,
         })
-        .await
-        .expect_err("should fail");
+        .await?;
 
-        match err {
-            TszError::Type { message, .. } => {
-                assert!(message.contains("Not all control paths return"), "unexpected: {message}");
-            }
-            other => panic!("expected type error, got: {other:?}"),
-        }
+        assert_has_error(&output, "Not all control paths return");
         Ok::<(), TszError>(())
     })
     .expect("ok");
@@ -914,12 +929,14 @@ export function main(): bigint {
         })?;
         let output = out_dir.path().join(exe_name("tsz_test_out"));
 
-        build_executable(BuildOptions {
+        let compile = build_executable(BuildOptions {
             entry,
             output: output.clone(),
             opt_level: OptLevel::None,
+            max_errors: MAX_ERRORS,
         })
         .await?;
+        assert_no_errors(&compile);
 
         let out = tokio::process::Command::new(&output)
             .output()
@@ -996,23 +1013,15 @@ export function main(): bigint {
         })?;
         let output = out_dir.path().join(exe_name("tsz_test_out"));
 
-        let err = build_executable(BuildOptions {
+        let output = build_executable(BuildOptions {
             entry,
             output,
             opt_level: OptLevel::None,
+            max_errors: MAX_ERRORS,
         })
-        .await
-        .expect_err("should fail");
+        .await?;
 
-        match err {
-            TszError::Type { message, .. } => {
-                assert!(
-                    message.contains("const initializer must be a compile-time constant"),
-                    "unexpected error message: {message}"
-                );
-            }
-            other => panic!("expected type error, got: {other:?}"),
-        }
+        assert_has_error(&output, "const initializer must be a compile-time constant");
         Ok::<(), TszError>(())
     })
     .expect("ok");
@@ -1046,23 +1055,14 @@ export function main(): bigint {
         })?;
         let output = out_dir.path().join(exe_name("tsz_test_out"));
 
-        let err = build_executable(BuildOptions {
+        let output = build_executable(BuildOptions {
             entry,
             output,
             opt_level: OptLevel::None,
+            max_errors: MAX_ERRORS,
         })
-        .await
-        .expect_err("should fail");
-
-        match err {
-            TszError::Type { message, .. } => {
-                assert!(
-                    message.contains("Cannot assign to const variable"),
-                    "unexpected error message: {message}"
-                );
-            }
-            other => panic!("expected type error, got: {other:?}"),
-        }
+        .await?;
+        assert_has_error(&output, "Cannot assign to const variable");
         Ok::<(), TszError>(())
     })
     .expect("ok");
@@ -1099,23 +1099,15 @@ export function main(): bigint {
         })?;
         let output = out_dir.path().join(exe_name("tsz_test_out"));
 
-        let err = build_executable(BuildOptions {
+        let output = build_executable(BuildOptions {
             entry,
             output,
             opt_level: OptLevel::None,
+            max_errors: MAX_ERRORS,
         })
-        .await
-        .expect_err("should fail");
+        .await?;
 
-        match err {
-            TszError::Type { message, .. } => {
-                assert!(
-                    message.contains("Cannot assign to parameter"),
-                    "unexpected error message: {message}"
-                );
-            }
-            other => panic!("expected type error, got: {other:?}"),
-        }
+        assert_has_error(&output, "Cannot assign to parameter");
         Ok::<(), TszError>(())
     })
     .expect("ok");

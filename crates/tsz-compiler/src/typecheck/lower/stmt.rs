@@ -1,14 +1,14 @@
 use crate::{Expr, HirExpr, HirLocal, HirStmt, Span, Stmt, TszError, Type};
 
 use super::assign;
-use super::const_eval::try_eval_const_value;
+use super::const_eval::{try_eval_const_value, ConstValue};
 use super::{
     ast_expr_span, lower_console_log_args, lower_expr_in_function, validate_local_decl_type, validate_local_value_type,
     LocalInfo, LocalValue, LowerCtx, LowerFnState,
 };
 
 pub(super) fn lower_stmt_list(
-    ctx: &LowerCtx<'_>,
+    ctx: &mut LowerCtx<'_>,
     state: &mut LowerFnState,
     out: &mut Vec<HirStmt>,
     stmts: &[Stmt],
@@ -16,17 +16,23 @@ pub(super) fn lower_stmt_list(
     let mut terminated = false;
     for stmt in stmts {
         if terminated {
-            return Err(TszError::Type {
-                message: "Unreachable code after return/break/continue".to_string(),
-                span: stmt_span(stmt),
-            });
+            ctx.diags
+                .error_at(ctx.module_path, stmt_span(stmt), "Unreachable code after return/break/continue");
         }
-        terminated = lower_stmt(ctx, state, out, stmt)?;
+        let stmt_terminated = lower_stmt(ctx, state, out, stmt)?;
+        if !terminated {
+            terminated = stmt_terminated;
+        }
     }
     Ok(terminated)
 }
 
-fn lower_stmt(ctx: &LowerCtx<'_>, state: &mut LowerFnState, out: &mut Vec<HirStmt>, stmt: &Stmt) -> Result<bool, TszError> {
+fn lower_stmt(
+    ctx: &mut LowerCtx<'_>,
+    state: &mut LowerFnState,
+    out: &mut Vec<HirStmt>,
+    stmt: &Stmt,
+) -> Result<bool, TszError> {
     match stmt {
         Stmt::Let {
             name,
@@ -94,13 +100,17 @@ fn lower_stmt(ctx: &LowerCtx<'_>, state: &mut LowerFnState, out: &mut Vec<HirStm
             body,
             *span,
         ),
-        Stmt::Break { span } => lower_break_stmt(state, out, *span),
-        Stmt::Continue { span } => lower_continue_stmt(state, out, *span),
+        Stmt::Break { span } => lower_break_stmt(ctx, state, out, *span),
+        Stmt::Continue { span } => lower_continue_stmt(ctx, state, out, *span),
+        Stmt::Error { span } => {
+            out.push(HirStmt::Error { span: *span });
+            Ok(false)
+        }
     }
 }
 
 fn lower_if_stmt(
-    ctx: &LowerCtx<'_>,
+    ctx: &mut LowerCtx<'_>,
     state: &mut LowerFnState,
     out: &mut Vec<HirStmt>,
     cond: &Expr,
@@ -108,14 +118,16 @@ fn lower_if_stmt(
     else_branch: Option<&Stmt>,
     span: Span,
 ) -> Result<bool, TszError> {
-    let (hir_cond, cond_ty) =
-        lower_expr_in_function(ctx.module_idx, cond, ctx.scopes, ctx.func_infos, &state.local_scopes)?;
-    if cond_ty != Type::Bool {
-        return Err(TszError::Type {
-            message: "if condition must be boolean".to_string(),
-            span: ast_expr_span(cond),
-        });
-    }
+    let (hir_cond, cond_ty) = lower_expr_in_function(ctx, cond, &state.local_scopes)?;
+    let hir_cond = if cond_ty != Type::Bool {
+        if cond_ty != Type::Error {
+            ctx.diags
+                .error_at(ctx.module_path, ast_expr_span(cond), "if condition must be boolean");
+        }
+        HirExpr::Error { span: ast_expr_span(cond) }
+    } else {
+        hir_cond
+    };
 
     let (then_body, then_terminated) = lower_stmt_in_new_scope(ctx, state, then_branch)?;
     let (else_body, else_terminated) = match else_branch {
@@ -137,21 +149,23 @@ fn lower_if_stmt(
 }
 
 fn lower_while_stmt(
-    ctx: &LowerCtx<'_>,
+    ctx: &mut LowerCtx<'_>,
     state: &mut LowerFnState,
     out: &mut Vec<HirStmt>,
     cond: &Expr,
     body: &Stmt,
     span: Span,
 ) -> Result<bool, TszError> {
-    let (hir_cond, cond_ty) =
-        lower_expr_in_function(ctx.module_idx, cond, ctx.scopes, ctx.func_infos, &state.local_scopes)?;
-    if cond_ty != Type::Bool {
-        return Err(TszError::Type {
-            message: "while condition must be boolean".to_string(),
-            span: ast_expr_span(cond),
-        });
-    }
+    let (hir_cond, cond_ty) = lower_expr_in_function(ctx, cond, &state.local_scopes)?;
+    let hir_cond = if cond_ty != Type::Bool {
+        if cond_ty != Type::Error {
+            ctx.diags
+                .error_at(ctx.module_path, ast_expr_span(cond), "while condition must be boolean");
+        }
+        HirExpr::Error { span: ast_expr_span(cond) }
+    } else {
+        hir_cond
+    };
 
     state.loop_depth += 1;
     let (body_stmts, _body_terminated) = lower_stmt_in_new_scope(ctx, state, body)?;
@@ -168,7 +182,7 @@ fn lower_while_stmt(
 }
 
 fn lower_for_stmt(
-    ctx: &LowerCtx<'_>,
+    ctx: &mut LowerCtx<'_>,
     state: &mut LowerFnState,
     out: &mut Vec<HirStmt>,
     init: Option<&Stmt>,
@@ -214,7 +228,7 @@ fn lower_for_stmt(
 }
 
 fn lower_for_init_stmt(
-    ctx: &LowerCtx<'_>,
+    ctx: &mut LowerCtx<'_>,
     state: &mut LowerFnState,
     out: &mut Vec<HirStmt>,
     init: &Stmt,
@@ -240,15 +254,24 @@ fn lower_for_init_stmt(
             expr,
             span,
         } => assign::lower_assign_stmt(ctx, state, out, name, *name_span, expr, *span),
-        _ => Err(TszError::Type {
-            message: "for-loop initializer must be `let/const/<name> = <expr>` or empty".to_string(),
-            span: stmt_span(init),
-        }),
+        Stmt::Error { span } => {
+            out.push(HirStmt::Error { span: *span });
+            Ok(())
+        }
+        _ => {
+            ctx.diags.error_at(
+                ctx.module_path,
+                stmt_span(init),
+                "for-loop initializer must be `let/const/<name> = <expr>` or empty",
+            );
+            out.push(HirStmt::Error { span: stmt_span(init) });
+            Ok(())
+        }
     }
 }
 
 fn lower_for_cond_expr(
-    ctx: &LowerCtx<'_>,
+    ctx: &mut LowerCtx<'_>,
     state: &LowerFnState,
     cond: Option<&Expr>,
     span: Span,
@@ -257,19 +280,19 @@ fn lower_for_cond_expr(
         return Ok(HirExpr::Bool { value: true, span });
     };
 
-    let (hir_cond, cond_ty) =
-        lower_expr_in_function(ctx.module_idx, cond, ctx.scopes, ctx.func_infos, &state.local_scopes)?;
+    let (hir_cond, cond_ty) = lower_expr_in_function(ctx, cond, &state.local_scopes)?;
     if cond_ty != Type::Bool {
-        return Err(TszError::Type {
-            message: "for-loop condition must be boolean".to_string(),
-            span: ast_expr_span(cond),
-        });
+        if cond_ty != Type::Error {
+            ctx.diags
+                .error_at(ctx.module_path, ast_expr_span(cond), "for-loop condition must be boolean");
+        }
+        return Ok(HirExpr::Error { span: ast_expr_span(cond) });
     }
     Ok(hir_cond)
 }
 
 fn lower_for_update_stmt(
-    ctx: &LowerCtx<'_>,
+    ctx: &mut LowerCtx<'_>,
     state: &mut LowerFnState,
     update: Option<&Stmt>,
 ) -> Result<Vec<HirStmt>, TszError> {
@@ -282,10 +305,12 @@ fn lower_for_update_stmt(
         span,
     } = update
     else {
-        return Err(TszError::Type {
-            message: "for-loop update clause must be `<name> = <expr>` or empty".to_string(),
-            span: stmt_span(update),
-        });
+        ctx.diags.error_at(
+            ctx.module_path,
+            stmt_span(update),
+            "for-loop update clause must be `<name> = <expr>` or empty",
+        );
+        return Ok(vec![HirStmt::Error { span: stmt_span(update) }]);
     };
 
     let mut out = Vec::with_capacity(1);
@@ -320,36 +345,47 @@ fn inject_for_update_before_continue(stmts: &[HirStmt], update: &[HirStmt]) -> V
             | HirStmt::Assign { .. }
             | HirStmt::Break { .. }
             | HirStmt::ConsoleLog { .. }
-            | HirStmt::Return { .. } => out.push(stmt.clone()),
+            | HirStmt::Return { .. }
+            | HirStmt::Error { .. } => out.push(stmt.clone()),
         }
     }
     out
 }
 
-fn lower_break_stmt(state: &LowerFnState, out: &mut Vec<HirStmt>, span: Span) -> Result<bool, TszError> {
+fn lower_break_stmt(
+    ctx: &mut LowerCtx<'_>,
+    state: &LowerFnState,
+    out: &mut Vec<HirStmt>,
+    span: Span,
+) -> Result<bool, TszError> {
     if state.loop_depth == 0 {
-        return Err(TszError::Type {
-            message: "break is only allowed inside while/for".to_string(),
-            span,
-        });
+        ctx.diags
+            .error_at(ctx.module_path, span, "break is only allowed inside while/for");
+        out.push(HirStmt::Error { span });
+        return Ok(false);
     }
     out.push(HirStmt::Break { span });
     Ok(true)
 }
 
-fn lower_continue_stmt(state: &LowerFnState, out: &mut Vec<HirStmt>, span: Span) -> Result<bool, TszError> {
+fn lower_continue_stmt(
+    ctx: &mut LowerCtx<'_>,
+    state: &LowerFnState,
+    out: &mut Vec<HirStmt>,
+    span: Span,
+) -> Result<bool, TszError> {
     if state.loop_depth == 0 {
-        return Err(TszError::Type {
-            message: "continue is only allowed inside while/for".to_string(),
-            span,
-        });
+        ctx.diags
+            .error_at(ctx.module_path, span, "continue is only allowed inside while/for");
+        out.push(HirStmt::Error { span });
+        return Ok(false);
     }
     out.push(HirStmt::Continue { span });
     Ok(true)
 }
 
 fn lower_stmt_in_new_scope(
-    ctx: &LowerCtx<'_>,
+    ctx: &mut LowerCtx<'_>,
     state: &mut LowerFnState,
     stmt: &Stmt,
 ) -> Result<(Vec<HirStmt>, bool), TszError> {
@@ -365,7 +401,7 @@ fn lower_stmt_in_new_scope(
 }
 
 fn lower_let_stmt(
-    ctx: &LowerCtx<'_>,
+    ctx: &mut LowerCtx<'_>,
     state: &mut LowerFnState,
     out: &mut Vec<HirStmt>,
     name: &str,
@@ -376,24 +412,31 @@ fn lower_let_stmt(
 ) -> Result<(), TszError> {
     // To avoid ambiguity between `foo` and `foo()` (variable vs function), disallow collisions with module-level symbols.
     if ctx.module_scope.contains_key(name) {
-        return Err(TszError::Type {
-            message: format!("Local variable name conflicts with a function/import: {name}"),
-            span: name_span,
-        });
+        ctx.diags.error_at(
+            ctx.module_path,
+            name_span,
+            format!("Local variable name conflicts with a function/import: {name}"),
+        );
+        return Ok(());
     }
 
-    let (hir_init, init_ty) =
-        lower_expr_in_function(ctx.module_idx, expr, ctx.scopes, ctx.func_infos, &state.local_scopes)?;
-    validate_local_value_type(init_ty, ast_expr_span(expr))?;
+    let (hir_init, mut init_ty) = lower_expr_in_function(ctx, expr, &state.local_scopes)?;
+    if !validate_local_value_type(ctx, init_ty, ast_expr_span(expr)) {
+        init_ty = Type::Error;
+    }
 
-    let declared_ty = annotated_type.unwrap_or(init_ty);
-    validate_local_decl_type(declared_ty, name_span)?;
+    let mut declared_ty = annotated_type.unwrap_or(init_ty);
+    if !validate_local_decl_type(ctx, declared_ty, name_span) {
+        declared_ty = Type::Error;
+    }
 
-    if declared_ty != init_ty {
-        return Err(TszError::Type {
-            message: format!("let initializer type mismatch: declared {:?}, got {:?}", declared_ty, init_ty),
-            span: ast_expr_span(expr),
-        });
+    if declared_ty != init_ty && declared_ty != Type::Error && init_ty != Type::Error {
+        ctx.diags.error_at(
+            ctx.module_path,
+            ast_expr_span(expr),
+            format!("let initializer type mismatch: declared {:?}, got {:?}", declared_ty, init_ty),
+        );
+        declared_ty = Type::Error;
     }
 
     let local_id = state.locals.len();
@@ -409,18 +452,20 @@ fn lower_let_stmt(
             ty: declared_ty,
         },
         name_span,
-    )?;
+        ctx.diags,
+        ctx.module_path,
+    );
 
     out.push(HirStmt::Let {
         local: local_id,
-        init: hir_init,
+        init: if declared_ty == Type::Error { HirExpr::Error { span } } else { hir_init },
         span,
     });
     Ok(())
 }
 
 fn lower_const_stmt(
-    ctx: &LowerCtx<'_>,
+    ctx: &mut LowerCtx<'_>,
     state: &mut LowerFnState,
     name: &str,
     name_span: Span,
@@ -433,70 +478,74 @@ fn lower_const_stmt(
 
     // To avoid ambiguity between `foo` and `foo()` (variable vs function), disallow collisions with module-level symbols.
     if ctx.module_scope.contains_key(name) {
-        return Err(TszError::Type {
-            message: format!("Local constant name conflicts with a function/import: {name}"),
-            span: name_span,
-        });
+        ctx.diags.error_at(
+            ctx.module_path,
+            name_span,
+            format!("Local constant name conflicts with a function/import: {name}"),
+        );
+        return Ok(());
     }
 
-    let (hir_init, init_ty) =
-        lower_expr_in_function(ctx.module_idx, expr, ctx.scopes, ctx.func_infos, &state.local_scopes)?;
-    validate_local_value_type(init_ty, ast_expr_span(expr))?;
-
-    let declared_ty = annotated_type.unwrap_or(init_ty);
-    validate_local_decl_type(declared_ty, name_span)?;
-
-    if declared_ty != init_ty {
-        return Err(TszError::Type {
-            message: format!(
-                "Local initializer type mismatch: declared {:?}, got {:?}",
-                declared_ty, init_ty
-            ),
-            span: ast_expr_span(expr),
-        });
+    let (hir_init, mut init_ty) = lower_expr_in_function(ctx, expr, &state.local_scopes)?;
+    if !validate_local_value_type(ctx, init_ty, ast_expr_span(expr)) {
+        init_ty = Type::Error;
     }
 
-    let Some(const_value) = try_eval_const_value(&hir_init) else {
-        return Err(TszError::Type {
-            message: "const initializer must be a compile-time constant (literal/unary minus/binary ops)".to_string(),
-            span: ast_expr_span(expr),
-        });
-    };
+    let mut declared_ty = annotated_type.unwrap_or(init_ty);
+    if !validate_local_decl_type(ctx, declared_ty, name_span) {
+        declared_ty = Type::Error;
+    }
+
+    if declared_ty != init_ty && declared_ty != Type::Error && init_ty != Type::Error {
+        ctx.diags.error_at(
+            ctx.module_path,
+            ast_expr_span(expr),
+            format!("Local initializer type mismatch: declared {:?}, got {:?}", declared_ty, init_ty),
+        );
+        declared_ty = Type::Error;
+    }
+
+    let const_value = try_eval_const_value(&hir_init);
+    if const_value.is_none() && declared_ty != Type::Error {
+        ctx.diags.error_at(
+            ctx.module_path,
+            ast_expr_span(expr),
+            "const initializer must be a compile-time constant (literal/unary minus/binary ops)",
+        );
+        declared_ty = Type::Error;
+    }
+
+    let value = const_value.unwrap_or_else(|| ConstValue::Number(0.0));
 
     state.local_scopes.insert_current(
         name.to_string(),
         LocalInfo {
-            value: LocalValue::Const(const_value),
+            value: LocalValue::Const(value),
             ty: declared_ty,
         },
         name_span,
-    )?;
+        ctx.diags,
+        ctx.module_path,
+    );
 
     // `const` is compile-time only for now, so it does not produce a HIR statement.
     Ok(())
 }
 
 fn lower_console_log_stmt(
-    ctx: &LowerCtx<'_>,
+    ctx: &mut LowerCtx<'_>,
     state: &mut LowerFnState,
     out: &mut Vec<HirStmt>,
     args: &[Expr],
     span: Span,
 ) -> Result<(), TszError> {
-    let hir_args = lower_console_log_args(
-        ctx.module_idx,
-        args,
-        ctx.scopes,
-        ctx.func_infos,
-        &state.local_scopes,
-        span,
-    )?;
+    let hir_args = lower_console_log_args(ctx, args, &state.local_scopes, span)?;
     out.push(HirStmt::ConsoleLog { args: hir_args, span });
     Ok(())
 }
 
 fn lower_return_stmt(
-    ctx: &LowerCtx<'_>,
+    ctx: &mut LowerCtx<'_>,
     state: &mut LowerFnState,
     out: &mut Vec<HirStmt>,
     expr: &Option<Expr>,
@@ -505,22 +554,20 @@ fn lower_return_stmt(
     let (hir_expr, expr_ty) = match expr {
         None => (None, Type::Void),
         Some(e) => {
-            let (hir, ty) = lower_expr_in_function(ctx.module_idx, e, ctx.scopes, ctx.func_infos, &state.local_scopes)?;
+            let (hir, ty) = lower_expr_in_function(ctx, e, &state.local_scopes)?;
             (Some(hir), ty)
         }
     };
 
     if ctx.return_type == Type::Void && expr.is_some() {
-        return Err(TszError::Type {
-            message: "void functions only allow `return;`".to_string(),
+        ctx.diags
+            .error_at(ctx.module_path, span, "void functions only allow `return;`");
+    } else if ctx.return_type != expr_ty && expr_ty != Type::Error && ctx.return_type != Type::Error {
+        ctx.diags.error_at(
+            ctx.module_path,
             span,
-        });
-    }
-    if ctx.return_type != expr_ty {
-        return Err(TszError::Type {
-            message: format!("Return type mismatch: declared {:?}, got {:?}", ctx.return_type, expr_ty),
-            span,
-        });
+            format!("Return type mismatch: declared {:?}, got {:?}", ctx.return_type, expr_ty),
+        );
     }
 
     out.push(HirStmt::Return { expr: hir_expr, span });
@@ -539,6 +586,7 @@ fn stmt_span(stmt: &Stmt) -> Span {
         | Stmt::Continue { span }
         | Stmt::Let { span, .. }
         | Stmt::Const { span, .. }
-        | Stmt::Assign { span, .. } => *span,
+        | Stmt::Assign { span, .. }
+        | Stmt::Error { span } => *span,
     }
 }

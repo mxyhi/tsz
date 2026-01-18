@@ -195,6 +195,9 @@ fn codegen_stmt(
             cond,
             body,
         ),
+        HirStmt::Error { .. } => Err(TszError::Codegen {
+            message: "Codegen encountered error statement (internal error)".to_string(),
+        }),
     }
 }
 
@@ -418,6 +421,9 @@ fn codegen_return_stmt(
             builder.ins().return_(&[v]);
             Ok(())
         }
+        Type::Error => Err(TszError::Codegen {
+            message: "Invalid return type (error)".to_string(),
+        }),
     }
 }
 
@@ -525,7 +531,7 @@ fn codegen_console_log_arg(
             local_vars,
             arg,
         ),
-        Type::Void => Err(TszError::Codegen {
+        Type::Void | Type::Error => Err(TszError::Codegen {
             message: "Invalid console.log argument type (should have been blocked by typecheck)".to_string(),
         }),
     }

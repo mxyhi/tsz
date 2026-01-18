@@ -1,3 +1,4 @@
+use crate::diagnostics::Diagnostics;
 use crate::{HirFunction, HirProgram, Program, Span, TszError, Type};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -11,7 +12,7 @@ mod lower;
 /// - Function bodies support `let`/`const`/`console.log(...)`, and the last statement must be `return`
 /// - Expressions: literals, identifiers (locals/params), unary minus, calls, + - * /, and parentheses
 /// - Imports: only `import { a, b } from "<specifier>";`
-pub fn analyze(program: &Program) -> Result<HirProgram, TszError> {
+pub fn analyze(program: &Program, diags: &mut Diagnostics) -> Result<HirProgram, TszError> {
     let module_index = build_module_index(program)?;
     let entry_module_idx = module_index
         .get(&program.entry)
@@ -21,16 +22,22 @@ pub fn analyze(program: &Program) -> Result<HirProgram, TszError> {
             span: Span { start: 0, end: 0 },
         })?;
 
-    let (func_infos, key_to_id) = index_functions(program)?;
-    let scopes = build_scopes(program, &module_index, &func_infos, &key_to_id)?;
+    let (func_infos, key_to_id) = index_functions(program, diags)?;
+    let scopes = build_scopes(program, &module_index, &func_infos, &key_to_id, diags)?;
 
-    let entry_id = find_entry_main(program, entry_module_idx, &key_to_id)?;
-    validate_entry_return_type(entry_id, &func_infos)?;
+    let entry_id = find_entry_main(program, entry_module_idx, &key_to_id, diags);
+    if let Some(entry_id) = entry_id {
+        let entry_module = program
+            .modules
+            .get(entry_module_idx)
+            .map(|m| m.path.as_path());
+        validate_entry_return_type(entry_id, &func_infos, entry_module, diags);
+    }
 
-    let hir_functions = build_hir_functions(program, &func_infos, &scopes, entry_id)?;
+    let hir_functions = build_hir_functions(program, &func_infos, &scopes, entry_id.unwrap_or(0), diags)?;
 
     Ok(HirProgram {
-        entry: entry_id,
+        entry: entry_id.unwrap_or(0),
         functions: hir_functions,
     })
 }
@@ -65,7 +72,10 @@ struct FuncKey {
     name: String,
 }
 
-fn index_functions(program: &Program) -> Result<(Vec<FuncInfo>, HashMap<FuncKey, usize>), TszError> {
+fn index_functions(
+    program: &Program,
+    diags: &mut Diagnostics,
+) -> Result<(Vec<FuncInfo>, HashMap<FuncKey, usize>), TszError> {
     let mut infos = Vec::new();
     let mut key_to_id = HashMap::new();
 
@@ -73,10 +83,12 @@ fn index_functions(program: &Program) -> Result<(Vec<FuncInfo>, HashMap<FuncKey,
         let mut seen = HashSet::new();
         for (func_idx, f) in module.functions.iter().enumerate() {
             if !seen.insert(f.name.clone()) {
-                return Err(TszError::Type {
-                    message: format!("Duplicate function name in module: {} ({:?})", f.name, module.path),
-                    span: f.span,
-                });
+                diags.error_at(
+                    &module.path,
+                    f.span,
+                    format!("Duplicate function name in module: {} ({:?})", f.name, module.path),
+                );
+                continue;
             }
 
             let id = infos.len();
@@ -85,10 +97,8 @@ fn index_functions(program: &Program) -> Result<(Vec<FuncInfo>, HashMap<FuncKey,
                 name: f.name.clone(),
             };
             if key_to_id.insert(key, id).is_some() {
-                return Err(TszError::Type {
-                    message: "Duplicate function definition (internal error)".to_string(),
-                    span: f.span,
-                });
+                diags.error_at(&module.path, f.span, "Duplicate function definition".to_string());
+                continue;
             }
             infos.push(FuncInfo {
                 module_idx,
@@ -110,6 +120,7 @@ fn build_scopes(
     module_index: &HashMap<PathBuf, usize>,
     func_infos: &[FuncInfo],
     key_to_id: &HashMap<FuncKey, usize>,
+    diags: &mut Diagnostics,
 ) -> Result<Vec<HashMap<String, usize>>, TszError> {
     let mut scopes: Vec<HashMap<String, usize>> = vec![HashMap::new(); program.modules.len()];
 
@@ -128,42 +139,56 @@ fn build_scopes(
     for (current_module_idx, module) in program.modules.iter().enumerate() {
         for import in &module.imports {
             let Some(dep_path) = &import.resolved_path else {
-                return Err(TszError::Type {
-                    message: "import is missing resolved_path (internal loader error)".to_string(),
-                    span: import.span,
-                });
+                diags.error_at(
+                    &module.path,
+                    import.span,
+                    "import resolution failed (unresolved path)".to_string(),
+                );
+                continue;
             };
-            let dep_idx = module_index.get(dep_path).copied().ok_or_else(|| TszError::Type {
-                message: format!("Import target module not loaded: {:?}", dep_path),
-                span: import.span,
-            })?;
+            let Some(dep_idx) = module_index.get(dep_path).copied() else {
+                diags.error_at(
+                    &module.path,
+                    import.span,
+                    format!("Import target module not loaded: {:?}", dep_path),
+                );
+                continue;
+            };
 
             for name in &import.names {
                 let target_key = FuncKey {
                     module_path: program.modules[dep_idx].path.clone(),
                     name: name.name.clone(),
                 };
-                let target_id = key_to_id.get(&target_key).copied().ok_or_else(|| TszError::Type {
-                    message: format!("Imported symbol does not exist: {} from {:?}", name.name, dep_path),
-                    span: name.span,
-                })?;
+                let Some(target_id) = key_to_id.get(&target_key).copied() else {
+                    diags.error_at(
+                        &module.path,
+                        name.span,
+                        format!("Imported symbol does not exist: {} from {:?}", name.name, dep_path),
+                    );
+                    continue;
+                };
 
                 if !func_infos[target_id].is_export {
-                    return Err(TszError::Type {
-                        message: format!("Only export functions can be imported: {} from {:?}", name.name, dep_path),
-                        span: name.span,
-                    });
+                    diags.error_at(
+                        &module.path,
+                        name.span,
+                        format!("Only export functions can be imported: {} from {:?}", name.name, dep_path),
+                    );
+                    continue;
                 }
 
                 let scope = &mut scopes[current_module_idx];
                 if scope.contains_key(&name.name) {
-                    return Err(TszError::Type {
-                        message: format!(
+                    diags.error_at(
+                        &module.path,
+                        name.span,
+                        format!(
                             "Duplicate binding name (conflicts with a local function or another import): {}",
                             name.name
                         ),
-                        span: name.span,
-                    });
+                    );
+                    continue;
                 }
                 scope.insert(name.name.clone(), target_id);
             }
@@ -177,55 +202,61 @@ fn find_entry_main(
     program: &Program,
     entry_module_idx: usize,
     key_to_id: &HashMap<FuncKey, usize>,
-) -> Result<usize, TszError> {
-    let entry_module = program
-        .modules
-        .get(entry_module_idx)
-        .ok_or_else(|| TszError::Type {
-            message: "Entry module index out of bounds (internal error)".to_string(),
-            span: Span { start: 0, end: 0 },
-        })?;
+    diags: &mut Diagnostics,
+) -> Option<usize> {
+    let entry_module = program.modules.get(entry_module_idx)?;
 
     let main = entry_module
         .functions
         .iter()
-        .find(|f| f.is_export && f.name == "main")
-        .ok_or_else(|| TszError::Type {
-            message: "Missing entry function: export function main(): <type> { ... }".to_string(),
-            span: Span { start: 0, end: 0 },
-        })?;
+        .find(|f| f.is_export && f.name == "main");
+
+    let Some(main) = main else {
+        diags.error_at(
+            &entry_module.path,
+            Span { start: 0, end: 0 },
+            "Missing entry function: export function main(): <type> { ... }".to_string(),
+        );
+        return None;
+    };
 
     if !main.params.is_empty() {
-        return Err(TszError::Type {
-            message: "Entry function main must have 0 parameters".to_string(),
-            span: main.span,
-        });
+        diags.error_at(
+            &entry_module.path,
+            main.span,
+            "Entry function main must have 0 parameters".to_string(),
+        );
+        return None;
     }
 
     let key = FuncKey {
         module_path: entry_module.path.clone(),
         name: main.name.clone(),
     };
-    key_to_id.get(&key).copied().ok_or_else(|| TszError::Type {
-        message: "Failed to index entry function (internal error)".to_string(),
-        span: main.span,
-    })
+    key_to_id.get(&key).copied()
 }
 
-fn validate_entry_return_type(entry_id: usize, func_infos: &[FuncInfo]) -> Result<(), TszError> {
-    match func_infos
-        .get(entry_id)
-        .ok_or_else(|| TszError::Type {
-            message: "Entry function index out of bounds (internal error)".to_string(),
-            span: Span { start: 0, end: 0 },
-        })?
-        .return_type
-    {
-        Type::Number | Type::BigInt | Type::Void => Ok(()),
-        Type::Bool | Type::String => Err(TszError::Type {
-            message: "Entry return type only supports number/bigint/void".to_string(),
-            span: Span { start: 0, end: 0 },
-        }),
+fn validate_entry_return_type(
+    entry_id: usize,
+    func_infos: &[FuncInfo],
+    entry_module: Option<&std::path::Path>,
+    diags: &mut Diagnostics,
+) {
+    let Some(info) = func_infos.get(entry_id) else { return };
+    match info.return_type {
+        Type::Number | Type::BigInt | Type::Void => {}
+        Type::Bool | Type::String => {
+            if let Some(path) = entry_module {
+                diags.error_at(
+                    path,
+                    Span { start: 0, end: 0 },
+                    "Entry return type only supports number/bigint/void".to_string(),
+                );
+            } else {
+                diags.error("Entry return type only supports number/bigint/void");
+            }
+        }
+        Type::Error => {}
     }
 }
 
@@ -234,6 +265,7 @@ fn build_hir_functions(
     func_infos: &[FuncInfo],
     scopes: &[HashMap<String, usize>],
     entry_id: usize,
+    diags: &mut Diagnostics,
 ) -> Result<Vec<HirFunction>, TszError> {
     let mut out = Vec::with_capacity(func_infos.len());
 
@@ -248,16 +280,16 @@ fn build_hir_functions(
         })?;
 
         for p in &func.params {
-            validate_user_fn_param_type(p.ty, p.span)?;
+            validate_user_fn_param_type(diags, &module.path, p.ty, p.span);
         }
-        validate_user_fn_return_type(func.return_type, func.span)?;
+        validate_user_fn_return_type(diags, &module.path, func.return_type, func.span);
 
         let module_scope = scopes.get(info.module_idx).ok_or_else(|| TszError::Type {
             message: "Module scope index out of bounds (internal error)".to_string(),
             span: func.span,
         })?;
         let (params, locals, body) =
-            lower::lower_function_body(info.module_idx, func, module_scope, scopes, func_infos)?;
+            lower::lower_function_body(info.module_idx, func, &module.path, module_scope, scopes, func_infos, diags)?;
 
         let symbol = if id == entry_id {
             "__tsz_user_main".to_string()
@@ -283,19 +315,19 @@ fn build_hir_functions(
     Ok(out)
 }
 
-fn validate_user_fn_param_type(ty: Type, span: Span) -> Result<(), TszError> {
+fn validate_user_fn_param_type(diags: &mut Diagnostics, module_path: &std::path::Path, ty: Type, span: Span) {
     match ty {
-        Type::Number | Type::BigInt | Type::Bool | Type::String => Ok(()),
-        Type::Void => Err(TszError::Type {
-            message: "Parameter type cannot be void".to_string(),
-            span,
-        }),
+        Type::Number | Type::BigInt | Type::Bool | Type::String => {}
+        Type::Void => {
+            diags.error_at(module_path, span, "Parameter type cannot be void");
+        }
+        Type::Error => {}
     }
 }
 
-fn validate_user_fn_return_type(return_type: Type, _span: Span) -> Result<(), TszError> {
+fn validate_user_fn_return_type(_diags: &mut Diagnostics, _module_path: &std::path::Path, return_type: Type, _span: Span) {
     match return_type {
-        Type::Number | Type::BigInt | Type::Void | Type::Bool | Type::String => Ok(()),
+        Type::Number | Type::BigInt | Type::Void | Type::Bool | Type::String | Type::Error => {}
     }
 }
 
