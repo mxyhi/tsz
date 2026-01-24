@@ -59,10 +59,10 @@
   - [x] `== != < <= > >=`
   - [x] `&& || !`
 
-- [ ] syntax polish
-  - [ ] numeric: `1e3` / `1E-3`
-  - [ ] trailing comma: params / call args / import names
-  - [ ] string escapes: `\n` `\t` `\\` `\"` `\'` `\uXXXX`
+- [x] syntax polish
+  - [x] numeric: `1e3` / `1E-3`
+  - [x] trailing comma: params / call args / import names
+  - [x] string escapes: `\n` `\t` `\\` `\"` `\'` `\uXXXX`
 
 ## Compiler / Tooling
 

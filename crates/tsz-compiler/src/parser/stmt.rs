@@ -1,8 +1,8 @@
 use crate::lexer::TokenKind;
-use crate::{ast::*, Span};
+use crate::{Span, ast::*};
 
-use super::expr::expr_span;
 use super::Parser;
+use super::expr::expr_span;
 
 impl<'a> Parser<'a, '_> {
     pub(super) fn parse_block_stmt(&mut self) -> Stmt {
@@ -78,11 +78,17 @@ impl<'a> Parser<'a, '_> {
                 TokenKind::KwLet => self.parse_let_stmt(),
                 TokenKind::KwConst => self.parse_const_stmt(),
                 TokenKind::Ident => {
-                    let is_dot = self.tokens.get(self.idx + 1).map(|t| t.kind) == Some(TokenKind::Dot);
+                    let is_dot =
+                        self.tokens.get(self.idx + 1).map(|t| t.kind) == Some(TokenKind::Dot);
                     if is_dot {
-                        self.error_at(self.peek().span, "for-loop initializer does not support console.log(...)");
+                        self.error_at(
+                            self.peek().span,
+                            "for-loop initializer does not support console.log(...)",
+                        );
                         self.sync_stmt();
-                        Stmt::Error { span: self.prev_span() }
+                        Stmt::Error {
+                            span: self.prev_span(),
+                        }
                     } else {
                         self.parse_assign_stmt()
                     }
@@ -93,7 +99,9 @@ impl<'a> Parser<'a, '_> {
                         "for-loop initializer must be `let/const/<name> = <expr>` or empty",
                     );
                     self.sync_stmt();
-                    Stmt::Error { span: self.prev_span() }
+                    Stmt::Error {
+                        span: self.prev_span(),
+                    }
                 }
             };
             Some(Box::new(init_stmt))
@@ -147,7 +155,10 @@ impl<'a> Parser<'a, '_> {
                 self.bump();
                 self.parse_expr()
             }
-            TokenKind::PlusEqual | TokenKind::MinusEqual | TokenKind::StarEqual | TokenKind::SlashEqual => {
+            TokenKind::PlusEqual
+            | TokenKind::MinusEqual
+            | TokenKind::StarEqual
+            | TokenKind::SlashEqual => {
                 let op = match self.bump().kind {
                     TokenKind::PlusEqual => BinaryOp::Add,
                     TokenKind::MinusEqual => BinaryOp::Sub,
@@ -174,7 +185,10 @@ impl<'a> Parser<'a, '_> {
             }
             _ => {
                 let got = self.peek();
-                self.error_at(got.span, "for-loop update clause only supports: =, +=, -=, *=, /=");
+                self.error_at(
+                    got.span,
+                    "for-loop update clause only supports: =, +=, -=, *=, /=",
+                );
                 self.sync_stmt();
                 return Stmt::Error { span: got.span };
             }
@@ -238,6 +252,9 @@ impl<'a> Parser<'a, '_> {
             loop {
                 args.push(self.parse_expr());
                 if self.eat(TokenKind::Comma) {
+                    if self.peek().kind == TokenKind::RParen {
+                        break;
+                    }
                     continue;
                 }
                 break;
@@ -271,7 +288,10 @@ impl<'a> Parser<'a, '_> {
                 self.bump();
                 self.parse_expr()
             }
-            TokenKind::PlusEqual | TokenKind::MinusEqual | TokenKind::StarEqual | TokenKind::SlashEqual => {
+            TokenKind::PlusEqual
+            | TokenKind::MinusEqual
+            | TokenKind::StarEqual
+            | TokenKind::SlashEqual => {
                 let op = match self.bump().kind {
                     TokenKind::PlusEqual => BinaryOp::Add,
                     TokenKind::MinusEqual => BinaryOp::Sub,

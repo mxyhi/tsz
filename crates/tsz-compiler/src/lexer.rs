@@ -1,5 +1,5 @@
-use crate::diagnostics::Diagnostics;
 use crate::Span;
+use crate::diagnostics::Diagnostics;
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,7 +91,9 @@ impl<'a, 'd> Lexer<'a, 'd> {
     fn next_token(&mut self) -> Token {
         self.skip_ws_and_comments();
         let start = self.pos;
-        let Some(b) = self.peek_byte() else { return self.eof_token() };
+        let Some(b) = self.peek_byte() else {
+            return self.eof_token();
+        };
         let kind = self.lex_token_kind(start, b);
 
         Token {
@@ -217,7 +219,11 @@ impl<'a, 'd> Lexer<'a, 'd> {
             b'0'..=b'9' => self.lex_number_or_bigint(),
             b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'$' => self.lex_ident_or_keyword(),
             _ => {
-                self.error_at(start, start + 1, format!("Unsupported character: 0x{b:02X}"));
+                self.error_at(
+                    start,
+                    start + 1,
+                    format!("Unsupported character: 0x{b:02X}"),
+                );
                 self.pos += 1;
                 TokenKind::Error
             }
@@ -279,19 +285,44 @@ impl<'a, 'd> Lexer<'a, 'd> {
             }
         }
 
-        // BigInt suffix 'n' (integers only)
-        if !is_float {
-            if let Some(b'n') = self.peek_byte() {
+        // Exponent part (scientific notation): `1e3` / `1E-3`.
+        if let Some(b'e' | b'E') = self.peek_byte() {
+            is_float = true;
+            self.pos += 1; // consume `e` / `E`
+
+            // Optional sign: `+` / `-`
+            if let Some(b'+' | b'-') = self.peek_byte() {
                 self.pos += 1;
-                return TokenKind::BigInt;
+            }
+
+            // Require at least one digit.
+            let exp_start = self.pos;
+            while let Some(b'0'..=b'9') = self.peek_byte() {
+                self.pos += 1;
+            }
+            if self.pos == exp_start {
+                self.error_at(
+                    start,
+                    self.pos,
+                    "Invalid scientific notation: missing exponent digits",
+                );
+                return TokenKind::Error;
             }
         }
 
-        // Scientific notation is not supported yet (keep the subset small/optimizable).
-        if let Some(b'e' | b'E') = self.peek_byte() {
-            self.error_at(start, self.pos + 1, "Scientific notation is not supported yet");
+        // BigInt suffix 'n' (integers only).
+        if let Some(b'n') = self.peek_byte() {
+            if is_float {
+                self.error_at(
+                    start,
+                    self.pos + 1,
+                    "BigInt suffix 'n' is not allowed on floating-point literals",
+                );
+                self.pos += 1;
+                return TokenKind::Error;
+            }
             self.pos += 1;
-            return TokenKind::Error;
+            return TokenKind::BigInt;
         }
 
         TokenKind::Number
@@ -352,7 +383,11 @@ impl<'a, 'd> Lexer<'a, 'd> {
                         }
                         (Some(_), _) => self.pos += 1,
                         (None, _) => {
-                            self.error_at(start, self.pos, "Unterminated block comment (missing */)");
+                            self.error_at(
+                                start,
+                                self.pos,
+                                "Unterminated block comment (missing */)",
+                            );
                             self.pos = self.src.len();
                             return;
                         }
@@ -376,7 +411,8 @@ impl<'a, 'd> Lexer<'a, 'd> {
     }
 
     fn error_at(&mut self, start: usize, end: usize, message: impl Into<String>) {
-        self.diags.error_at(&self.path, Span { start, end }, message);
+        self.diags
+            .error_at(&self.path, Span { start, end }, message);
     }
 }
 

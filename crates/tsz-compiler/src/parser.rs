@@ -1,10 +1,11 @@
 use crate::diagnostics::Diagnostics;
 use crate::lexer::{Token, TokenKind};
-use crate::{ast::*, lexer, Span};
+use crate::{Span, ast::*, lexer};
 use std::path::{Path, PathBuf};
 
 mod expr;
 mod stmt;
+mod string;
 
 pub fn parse_module(path: &Path, source: &str, diags: &mut Diagnostics) -> Module {
     let tokens = lexer::lex(source, path, diags);
@@ -148,8 +149,7 @@ impl<'a, 'd> Parser<'a, 'd> {
 
             if self.eat(TokenKind::Comma) {
                 if self.peek().kind == TokenKind::RParen {
-                    self.error_at(self.peek().span, "Trailing comma in parameter list is not supported");
-                    return params;
+                    break;
                 }
                 continue;
             }
@@ -278,8 +278,14 @@ impl<'a, 'd> Parser<'a, 'd> {
             } else {
                 "<error>".to_string()
             };
-            names.push(ImportName { name, span: ident.span });
+            names.push(ImportName {
+                name,
+                span: ident.span,
+            });
             if self.eat(TokenKind::Comma) {
+                if self.peek().kind == TokenKind::RBrace {
+                    break;
+                }
                 continue;
             }
             break;
@@ -289,14 +295,20 @@ impl<'a, 'd> Parser<'a, 'd> {
         self.expect(TokenKind::KwFrom);
         let (from_tok, from_ok) = self.expect_string();
         let from = if from_ok {
-            self.parse_string_value(from_tok)
+            match self.parse_string_value(from_tok) {
+                Some(v) => v,
+                None => return None,
+            }
         } else {
-            String::new()
+            return None;
         };
         let semi = self.expect(TokenKind::Semicolon).span;
 
         if from.is_empty() {
-            self.error_at(from_tok.span, "Import source must be a string literal");
+            self.error_at(
+                from_tok.span,
+                "Import source cannot be an empty string literal",
+            );
             return None;
         }
 
@@ -354,30 +366,11 @@ impl<'a, 'd> Parser<'a, 'd> {
         }
     }
 
-    fn parse_string_value(&self, tok: Token) -> String {
-        let raw = self.slice(tok.span);
-        let bytes = raw.as_bytes();
-        if bytes.len() < 2 {
-            return String::new();
-        }
-        let quote = bytes[0];
-        if quote != b'"' && quote != b'\'' {
-            return String::new();
-        }
-        if bytes[bytes.len() - 1] != quote {
-            return String::new();
-        }
-        String::from_utf8(bytes[1..bytes.len() - 1].to_vec()).unwrap_or_default()
-    }
-
     fn peek(&self) -> Token {
-        self.tokens
-            .get(self.idx)
-            .copied()
-            .unwrap_or(Token {
-                kind: TokenKind::Eof,
-                span: Span { start: 0, end: 0 },
-            })
+        self.tokens.get(self.idx).copied().unwrap_or(Token {
+            kind: TokenKind::Eof,
+            span: Span { start: 0, end: 0 },
+        })
     }
 
     fn bump(&mut self) -> Token {
@@ -407,7 +400,10 @@ impl<'a, 'd> Parser<'a, 'd> {
             (self.bump(), true)
         } else {
             if t.kind != TokenKind::Error {
-                self.error_at(t.span, format!("Expected {kind:?}, got {got:?}", got = t.kind));
+                self.error_at(
+                    t.span,
+                    format!("Expected {kind:?}, got {got:?}", got = t.kind),
+                );
             }
             (self.bump(), false)
         }

@@ -8,6 +8,16 @@ fn parse_ok(src: &str) -> Module {
     m
 }
 
+fn parse_err(src: &str) -> Module {
+    let mut diags = Diagnostics::new(10);
+    let m = parse_module(Path::new("main.ts"), src, &mut diags);
+    assert!(
+        diags.has_errors(),
+        "expected parse diagnostics to contain errors"
+    );
+    m
+}
+
 #[test]
 fn parse_minimal_main() {
     let src = "export function main(): bigint { return 42n; }";
@@ -31,6 +41,20 @@ export function main(): bigint { return foo(); }
     assert_eq!(m.imports[0].names[1].name, "bar");
     assert_eq!(m.imports[0].from, "./lib.ts");
     assert_eq!(m.functions.len(), 1);
+}
+
+#[test]
+fn parse_import_trailing_comma() {
+    let src = r#"
+import { foo, bar, } from "./lib.ts";
+export function main(): bigint { return foo(); }
+"#;
+    let m = parse_ok(src);
+    assert_eq!(m.imports.len(), 1);
+    assert_eq!(m.imports[0].names.len(), 2);
+    assert_eq!(m.imports[0].names[0].name, "foo");
+    assert_eq!(m.imports[0].names[1].name, "bar");
+    assert_eq!(m.imports[0].from, "./lib.ts");
 }
 
 #[test]
@@ -59,6 +83,71 @@ export function main(): void {
         panic!("expected console.log stmt");
     };
     assert_eq!(args.len(), 3);
+}
+
+#[test]
+fn parse_console_log_trailing_comma() {
+    let src = r#"
+export function main(): void {
+  console.log(1n,);
+  return;
+}
+"#;
+    let m = parse_ok(src);
+    let f = &m.functions[0];
+    let Some(Stmt::ConsoleLog { args, .. }) = f.body.first() else {
+        panic!("expected console.log stmt");
+    };
+    assert_eq!(args.len(), 1);
+}
+
+#[test]
+fn parse_string_empty_literal_is_allowed() {
+    let src = r#"
+export function main(): void {
+  console.log("");
+  return;
+}
+"#;
+    let m = parse_ok(src);
+    let f = &m.functions[0];
+    let Some(Stmt::ConsoleLog { args, .. }) = f.body.first() else {
+        panic!("expected console.log stmt");
+    };
+    let Some(Expr::String { value, .. }) = args.first() else {
+        panic!("expected string literal arg");
+    };
+    assert!(value.is_empty());
+}
+
+#[test]
+fn parse_string_escapes() {
+    let src = r#"
+export function main(): void {
+  console.log("a\nb\tc\\d\"e\'f\u0041");
+  return;
+}
+"#;
+    let m = parse_ok(src);
+    let f = &m.functions[0];
+    let Some(Stmt::ConsoleLog { args, .. }) = f.body.first() else {
+        panic!("expected console.log stmt");
+    };
+    let Some(Expr::String { value, .. }) = args.first() else {
+        panic!("expected string literal arg");
+    };
+    assert_eq!(value, "a\nb\tc\\d\"e'fA");
+}
+
+#[test]
+fn parse_string_invalid_escape_errors() {
+    let src = r#"
+export function main(): void {
+  console.log("\q");
+  return;
+}
+"#;
+    let _m = parse_err(src);
 }
 
 #[test]
@@ -124,7 +213,13 @@ export function main(): bigint {
     let Some(Stmt::Assign { expr, .. }) = m.functions[0].body.get(1) else {
         panic!("expected assign stmt");
     };
-    let Expr::Binary { op: BinaryOp::Add, left, right, .. } = expr else {
+    let Expr::Binary {
+        op: BinaryOp::Add,
+        left,
+        right,
+        ..
+    } = expr
+    else {
         panic!("expected desugared binary add");
     };
     assert!(matches!(left.as_ref(), Expr::Ident { name, .. } if name == "x"));
@@ -148,6 +243,18 @@ export function add(a: bigint, b: bigint): bigint { return a; }
 }
 
 #[test]
+fn parse_function_params_trailing_comma() {
+    let src = r#"
+export function add(a: bigint, b: bigint,): bigint { return a; }
+"#;
+    let m = parse_ok(src);
+    let f = &m.functions[0];
+    assert_eq!(f.params.len(), 2);
+    assert_eq!(f.params[0].name, "a");
+    assert_eq!(f.params[1].name, "b");
+}
+
+#[test]
 fn parse_call_with_args() {
     let src = r#"
 function add(a: bigint, b: bigint): bigint { return a; }
@@ -155,8 +262,31 @@ export function main(): bigint { return add(1n, 2n); }
 "#;
     let m = parse_ok(src);
     let f = &m.functions[1];
-    let Some(Stmt::Return { expr: Some(Expr::Call { callee, args, .. }), .. }) = f.body.first() else {
+    let Some(Stmt::Return {
+        expr: Some(Expr::Call { callee, args, .. }),
+        ..
+    }) = f.body.first()
+    else {
         panic!("expected return add(1n, 2n)");
+    };
+    assert_eq!(callee, "add");
+    assert_eq!(args.len(), 2);
+}
+
+#[test]
+fn parse_call_with_args_trailing_comma() {
+    let src = r#"
+function add(a: bigint, b: bigint): bigint { return a; }
+export function main(): bigint { return add(1n, 2n,); }
+"#;
+    let m = parse_ok(src);
+    let f = &m.functions[1];
+    let Some(Stmt::Return {
+        expr: Some(Expr::Call { callee, args, .. }),
+        ..
+    }) = f.body.first()
+    else {
+        panic!("expected return add(1n, 2n,)");
     };
     assert_eq!(callee, "add");
     assert_eq!(args.len(), 2);
@@ -171,11 +301,20 @@ export function main(): number {
 "#;
     let m = parse_ok(src);
     let f = &m.functions[0];
-    let Some(Stmt::Return { expr: Some(expr), .. }) = f.body.first() else {
+    let Some(Stmt::Return {
+        expr: Some(expr), ..
+    }) = f.body.first()
+    else {
         panic!("expected return");
     };
 
-    let Expr::Binary { op: BinaryOp::Add, left, right, .. } = expr else {
+    let Expr::Binary {
+        op: BinaryOp::Add,
+        left,
+        right,
+        ..
+    } = expr
+    else {
         panic!("expected top-level add");
     };
 
@@ -190,10 +329,60 @@ export function main(): number {
         panic!("expected mul");
     };
     assert!(matches!(mul_r.as_ref(), Expr::Number { value, .. } if *value == 3.0));
-    assert!(matches!(mul_l.as_ref(), Expr::Binary { op: BinaryOp::Add, .. }));
+    assert!(matches!(
+        mul_l.as_ref(),
+        Expr::Binary {
+            op: BinaryOp::Add,
+            ..
+        }
+    ));
 
     // Right: 4 / 2
-    assert!(matches!(right.as_ref(), Expr::Binary { op: BinaryOp::Div, .. }));
+    assert!(matches!(
+        right.as_ref(),
+        Expr::Binary {
+            op: BinaryOp::Div,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn parse_number_scientific_notation() {
+    let src = r#"
+export function main(): number {
+  return 1e3;
+}
+"#;
+    let m = parse_ok(src);
+    let f = &m.functions[0];
+    let Some(Stmt::Return {
+        expr: Some(Expr::Number { value, .. }),
+        ..
+    }) = f.body.first()
+    else {
+        panic!("expected return number literal");
+    };
+    assert_eq!(*value, 1000.0);
+}
+
+#[test]
+fn parse_number_scientific_notation_negative_exp() {
+    let src = r#"
+export function main(): number {
+  return 1E-3;
+}
+"#;
+    let m = parse_ok(src);
+    let f = &m.functions[0];
+    let Some(Stmt::Return {
+        expr: Some(Expr::Number { value, .. }),
+        ..
+    }) = f.body.first()
+    else {
+        panic!("expected return number literal");
+    };
+    assert!((*value - 0.001).abs() < 1e-12);
 }
 
 #[test]
@@ -205,15 +394,36 @@ export function main(): boolean {
 "#;
     let m = parse_ok(src);
     let f = &m.functions[0];
-    let Some(Stmt::Return { expr: Some(expr), .. }) = f.body.first() else {
+    let Some(Stmt::Return {
+        expr: Some(expr), ..
+    }) = f.body.first()
+    else {
         panic!("expected return");
     };
 
-    let Expr::Binary { op: BinaryOp::Lt, left, right, .. } = expr else {
+    let Expr::Binary {
+        op: BinaryOp::Lt,
+        left,
+        right,
+        ..
+    } = expr
+    else {
         panic!("expected < at top level");
     };
-    assert!(matches!(left.as_ref(), Expr::Binary { op: BinaryOp::Add, .. }));
-    assert!(matches!(right.as_ref(), Expr::Binary { op: BinaryOp::Mul, .. }));
+    assert!(matches!(
+        left.as_ref(),
+        Expr::Binary {
+            op: BinaryOp::Add,
+            ..
+        }
+    ));
+    assert!(matches!(
+        right.as_ref(),
+        Expr::Binary {
+            op: BinaryOp::Mul,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -225,11 +435,20 @@ export function main(): boolean {
 "#;
     let m = parse_ok(src);
     let f = &m.functions[0];
-    let Some(Stmt::Return { expr: Some(expr), .. }) = f.body.first() else {
+    let Some(Stmt::Return {
+        expr: Some(expr), ..
+    }) = f.body.first()
+    else {
         panic!("expected return");
     };
 
-    let Expr::Binary { op: BinaryOp::Or, left, right, .. } = expr else {
+    let Expr::Binary {
+        op: BinaryOp::Or,
+        left,
+        right,
+        ..
+    } = expr
+    else {
         panic!("expected || at top level");
     };
     assert!(matches!(left.as_ref(), Expr::Bool { value: true, .. }));
@@ -262,10 +481,19 @@ export function main(): boolean {
 "#;
     let m = parse_ok(src);
     let f = &m.functions[0];
-    let Some(Stmt::Return { expr: Some(expr), .. }) = f.body.first() else {
+    let Some(Stmt::Return {
+        expr: Some(expr), ..
+    }) = f.body.first()
+    else {
         panic!("expected return");
     };
-    assert!(matches!(expr, Expr::Binary { op: BinaryOp::Eq, .. }));
+    assert!(matches!(
+        expr,
+        Expr::Binary {
+            op: BinaryOp::Eq,
+            ..
+        }
+    ));
 }
 
 #[test]

@@ -204,7 +204,10 @@ impl<'a> Parser<'a, '_> {
                         return Expr::Error { span: tok.span };
                     }
                 };
-                Expr::Number { value: v, span: tok.span }
+                Expr::Number {
+                    value: v,
+                    span: tok.span,
+                }
             }
             TokenKind::BigInt => {
                 let tok = self.bump();
@@ -217,16 +220,20 @@ impl<'a> Parser<'a, '_> {
                         return Expr::Error { span: tok.span };
                     }
                 };
-                Expr::BigInt { value: v, span: tok.span }
+                Expr::BigInt {
+                    value: v,
+                    span: tok.span,
+                }
             }
             TokenKind::String => {
                 let tok = self.bump();
-                let v = self.parse_string_value(tok);
-                if v.is_empty() {
-                    self.error_at(tok.span, "Invalid string literal");
+                let Some(v) = self.parse_string_value(tok) else {
                     return Expr::Error { span: tok.span };
+                };
+                Expr::String {
+                    value: v,
+                    span: tok.span,
                 }
-                Expr::String { value: v, span: tok.span }
             }
             TokenKind::Ident => {
                 let ident = self.bump();
@@ -244,7 +251,6 @@ impl<'a> Parser<'a, '_> {
                             args.push(self.parse_expr());
                             if self.eat(TokenKind::Comma) {
                                 if self.peek().kind == TokenKind::RParen {
-                                    self.error_at(self.peek().span, "Trailing comma in call arguments is not supported");
                                     break;
                                 }
                                 continue;
@@ -262,7 +268,10 @@ impl<'a> Parser<'a, '_> {
                         },
                     }
                 } else {
-                    Expr::Ident { name, span: ident.span }
+                    Expr::Ident {
+                        name,
+                        span: ident.span,
+                    }
                 }
             }
             TokenKind::LParen => {
