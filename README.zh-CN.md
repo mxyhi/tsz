@@ -2,30 +2,30 @@
 
 [English](README.md) | [中文](README.zh-CN.md)
 
-TSZ is a compiled (AOT) language and compiler that is primarily TypeScript syntax, allows dropping bad features, and targets high performance.
+一个“TypeScript 语法为主、可删减坏特性、追求高性能”的编译型语言与编译器（AOT）。
 
-## Quick Start
+## 快速开始
 
 ```bash
-# Run an example (process exit code: 42)
+# 运行示例（返回进程退出码 42）
 cargo run -p tsz-cli -- run examples/exit42.ts
 
-# Run a multi-file package example (directory entry, import + call)
+# 运行多文件包示例（目录入口，import + 调用）
 cargo run -p tsz-cli -- run examples/pkg-import
 
-# Stdout example (console.log)
+# 标准输出示例（console.log）
 cargo run -p tsz-cli -- run examples/console-log.ts
 
-# Assignment example (`=` and `+=` etc.)
+# 赋值示例（= 与 += 等语法糖）
 cargo run -p tsz-cli -- run examples/assign.ts
 
-# Control flow example (block / if / else / while / break / continue)
+# 控制流示例（block / if / else / while / break / continue）
 cargo run -p tsz-cli -- run examples/control-flow.ts
 
-# `const` example (compile-time folding / inlining)
+# const 示例（编译期常量折叠/内联）
 cargo run -p tsz-cli -- run examples/const.ts
 
-# Build artifacts (exe/obj/ir)
+# 构建产物（exe/obj/ir）
 cargo run -p tsz-cli -- build examples/exit42.ts --emit exe
 cargo run -p tsz-cli -- build examples/exit42.ts --emit obj -o out.o
 cargo run -p tsz-cli -- build examples/exit42.ts --emit ir -o out.clif
@@ -33,14 +33,14 @@ cargo run -p tsz-cli -- build examples/exit42.ts --emit ir -o out.clif
 # OptLevel: size
 cargo run -p tsz-cli -- build examples/exit42.ts --opt size
 
-# Benchmark (compile/run)
+# 基准测试（compile/run）
 cargo run -p tsz-cli -- bench examples/control-flow.ts --compile-iters 10 --run-iters 30
 ```
 
-## Spec (implemented minimal subset)
+## 规范（当前实现的最小子集）
 
-See [docs/tsz-spec.md](docs/tsz-spec.md).
+见 [docs/tsz-spec.md](docs/tsz-spec.md)。
 
-## Roadmap
+## 路线图
 
-See [TODO.md](TODO.md).
+见 [TODO.md](TODO.md)。
