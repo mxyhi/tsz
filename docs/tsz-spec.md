@@ -1,3 +1,235 @@
+[English](#en) | [中文](#zh)
+
+<a id="en"></a>
+# TSZ Spec (v0)
+
+TSZ is a language subset based primarily on TypeScript syntax, aiming for predictable static semantics and high-performance AOT.
+
+> Goal: allow “removing bad features” and do not pursue TypeScript/JavaScript compatibility.
+
+## 1. Files and Package Entry
+
+### 1.1 Source File Extensions
+
+- Source file extension: `.ts` (recommended)
+- Compatible extension: `.tsz` (optional)
+
+### 1.2 Entry Arguments for `tsz build/run`
+
+`tsz build <entry>` / `tsz run <entry>` supports two forms of `<entry>`:
+
+1. **File path**: directly specify a `.ts` / `.tsz` file (extension may be omitted and will be auto-completed).
+2. **Directory path (npm package root)**: the directory must contain `package.json`, and the entry file is specified via `tsz.entry`.
+
+### 1.3 TSZ Fields in `package.json` (Minimum Constraints)
+
+TSZ only cares about one field:
+
+```json
+{
+  "name": "your-package",
+  "version": "0.0.0",
+  "tsz": { "entry": "src/main.ts" }
+}
+```
+
+Rules:
+
+- `tsz.entry` must be a path relative to the package root
+- It must point to a `.ts` / `.tsz` source file
+- TSZ **does not** read Node/TS fields like `main` / `module` / `exports` / `types`
+
+## 2. Module System (Minimal Subset)
+
+### 2.1 Syntax
+
+Only named imports are supported:
+
+```ts
+import { foo, bar } from "./lib.ts";
+```
+
+Constraints:
+
+- Only `import { a, b } from "<specifier>";` is supported
+- Default import, `import * as ns`, `as` renaming, and dynamic import are not supported
+- `<specifier>` can only be:
+  - **Relative paths**: starting with `./` or `../`
+  - **Package name/subpath** (node_modules), for example:
+    - Package root: `"left-pad"` / `"@scope/pkg"`
+    - Package subpath: `"left-pad/subpath"` / `"@scope/pkg/subpath"`
+
+### 2.2 Resolution Rules (Simplified Node Style)
+
+#### Relative Paths
+
+Let the current module file be `current_file`, and its directory be `current_dir`:
+
+- If `<specifier>` omits the extension, auto-complete to `.ts` (then try `.tsz`)
+- If the resolved path is a directory: treat it as a “package root” and use `tsz.entry` from its `package.json`
+
+#### Package Names/Subpaths (node_modules)
+
+Starting from `current_dir`, search upwards for `node_modules/<pkg>`:
+
+- Once found, treat that directory as the “package root” and read `tsz.entry` from its `package.json` (for TSZ package validation)
+
+Then:
+
+- If `<specifier>` is the **package root**: resolve to `tsz.entry`
+- If `<specifier>` has a **subpath**: treat the subpath as a path under the package root and continue resolving by the “relative path” rules
+  - If extension is omitted: complete to `.ts` (then try `.tsz`)
+  - If it hits a directory: treat it as a “package root” and read `tsz.entry` from that directory’s `package.json`
+
+Subpath constraints:
+
+- No empty segments, `.`, or `..`
+- `\\` is not allowed
+- If not found, raise an error
+
+> TSZ’s npm support boundary: only “dependency resolution + source compilation”; it does not implement Node’s complex `exports/conditions` rules, nor execute JS.
+
+## 3. Syntax Subset (v1)
+
+### 3.1 Top-Level Declarations
+
+Only function declarations are supported:
+
+```ts
+export function main(): bigint {
+  return 42n;
+}
+```
+
+Constraints:
+
+- Only `function <name>(a: T, b: U, ...): <type> { ... }` is supported
+  - Parameters must have type annotations; currently supported types are `number/bigint/boolean/string`
+- `export` is only used to expose functions for import by other modules
+
+### 3.2 Statements
+
+- Block statements (real block scope, nesting allowed):
+  - `{ <stmt>* }`
+  - Rule: `let/const` declared inside a block are only visible within that block and its child blocks
+  - Empty blocks are allowed
+
+- `if / else if / else`:
+  - `if (<cond>) <stmt>`
+  - `if (<cond>) <stmt> else <stmt>`
+  - `if (<cond>) <stmt> else if (<cond>) <stmt> ... else <stmt>`
+  - Rule: `<cond>` must be of type `boolean`
+  - `<stmt>` can be a single statement or a block `{ ... }`
+
+- `while` (and `break/continue`):
+  - `while (<cond>) <stmt>`
+  - Rule: `<cond>` must be of type `boolean`
+  - `break;` / `continue;` are only allowed inside loop bodies (`while/for`), taking effect on the innermost loop
+
+- `for` (and `break/continue`):
+  - `for (<init?>; <cond?>; <update?>) <stmt>`
+  - `<init?>` (initialization clause) supports:
+    - `let <name>: <type>? = <expr>;`
+    - `const <name>: <type>? = <expr>;`
+    - `<name> = <expr>;` (and `+=` / `-=` / `*=` / `/=`)
+    - empty (omitted)
+  - `<cond?>` (condition clause) supports:
+    - `<expr>` (type must be `boolean`)
+    - empty (omitted, semantically equivalent to `true`)
+  - `<update?>` (update clause) supports:
+    - `<name> = <expr>` (and `+=` / `-=` / `*=` / `/=`)
+    - empty (omitted)
+  - `break;` / `continue;` are only allowed inside loop bodies (`while/for`), taking effect on the innermost loop
+  - Scope: `let/const` bindings declared in `<init?>` are only visible inside the `for` statement (including condition/update/body)
+
+- `let` (function-local variables; block scope):
+  - `let <name>: <type>? = <expr>;`
+  - Rule: `<type>` may be omitted and inferred from `<expr>`
+  - Constraints: only `number/bigint/boolean/string` are supported; must be declared before use; cannot collide with module-level symbols (functions/imports)
+
+- `const` (function-local constants; compile-time constant bindings):
+  - `const <name>: <type>? = <expr>;`
+  - Rule: `<type>` may be omitted and inferred from `<expr>`
+  - Constraints: only `number/bigint/boolean/string` are supported; `<expr>` must be compile-time foldable (literals / unary ops (`-` / `!`) / binary ops (`+ - * / == != < <= > >= && ||`) / references to other `const`; `boolean/string` do not support unary minus); must be declared before use; cannot collide with module-level symbols (functions/imports)
+
+- Assignment (only `let` is writable):
+  - `<name> = <expr>;`
+  - Constraints:
+    - The assignment target must be a declared local `let`; assigning to `const` and function parameters is forbidden
+    - The type of `<expr>` must match the variable type (`number/bigint/boolean/string`; `void` is not allowed)
+  - Optional sugar: `+=` / `-=` / `*=` / `/=`
+    - Semantics: `x <op>= y` ≡ `x = x <op> y`
+    - Constraints: `<op>` only works for `number/bigint`, and both sides must have the same type (reuse binary op rules)
+
+- `console.log` (standard output):
+  - `console.log();`
+  - `console.log(<expr>, <expr>, ...);`
+  - Rule: arguments are printed separated by spaces, with a trailing newline
+  - Parameter types: `number` / `bigint` / `boolean` / `string`
+
+- `return`:
+  - `return <expr>;`
+  - `return;` (only when the function return type is `void`)
+  - Constraints: non-`void` functions require “all control paths must return a value”; `void` functions may omit the final `return;` (implicit return)
+
+### 3.3 Expressions
+
+- `number` literal (internally `f64`)
+- `bigint` literal (internally **fixed-width** `i64`, e.g. `42n`)
+- `boolean` literal: `true` / `false`
+- `string` literal (UTF-8)
+- Identifiers: references to locals/constants/parameters (from `let/const/params`; `const` is currently inlined at compile time)
+- Unary ops: `-<expr>` / `!<expr>` (`!` only supports `boolean`)
+- Binary ops (arithmetic): `+ - * /` (only for `number/bigint`, and both sides must have the same type)
+- Binary ops (comparison): `== != < <= > >=` (`< <= > >=` only for `number/bigint`; `== !=` supports `number/bigint/boolean`; both sides must have the same type; result is `boolean`)
+- Binary ops (logical): `&& ||` (only `boolean`; result is `boolean`; short-circuit evaluation)
+- Precedence (high → low): `!` > `* /` > `+ -` > `< <= > >=` > `== !=` > `&&` > `||` (all left-associative)
+- Parentheses: `(<expr>)`
+- Function call: `foo(<expr>, <expr>, ...)`
+
+## 4. Types and Entry ABI
+
+### 4.1 Types
+
+- `number`: `f64`
+- `bigint`: `i64` (not arbitrary precision)
+- `void`
+- `boolean`: `i8` (0/1)
+- `string`: pointer (currently implemented as a length-prefixed UTF-8 byte sequence; usable for locals/params/return values)
+
+The entry return type of `main` still only supports `number/bigint/void`.
+
+### 4.2 Entry Function and Exit Code
+
+The entry function must be:
+
+```ts
+export function main(): number | bigint | void { ... }
+```
+
+Constraints:
+
+- `main` must have **0 parameters** (called by a C ABI `int main()` wrapper without arguments)
+
+Process exit code mapping:
+
+- `void` → 0
+- `bigint(i64)` → truncated to `i32`
+- `number(f64)` → converted to `i32` (truncated toward zero)
+
+## 5. Toolchain and Platform
+
+- Code generation: Cranelift AOT (native ISA)
+- Linker: uses environment variable `CC`, otherwise:
+  - macOS/Linux: `cc`
+  - Windows: `clang`
+
+## 6. Not Implemented but Decided Direction (Placeholder)
+
+- Memory: ARC/RC + `Weak` (runtime and object layout not implemented yet)
+- FFI: C ABI (not implemented yet)
+
+<a id="zh"></a>
 # TSZ 规范（v0）
 
 TSZ 是一个以 TypeScript 语法为主、追求可预测静态语义与高性能 AOT 的语言子集。
